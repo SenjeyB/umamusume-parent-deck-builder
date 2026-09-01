@@ -231,16 +231,18 @@
     for (const grant of scenario.grants) {
       if (grant.skills.length) {
         free.push(...grant.skills);
-        note(grant.skills, grant.how);
+        note(grant.skills, grant.how, grant.note ? { note: grant.note } : null);
       }
       if (grant.options && grant.options.length) {
-        const options = grant.options.map((option) => {
+        const options = [];
+        for (const option of grant.options) {
           const linked = !option.link || option.link === ownerCharaId || deckCharas.has(option.link);
+          if (!linked && option.requireLink) continue;
           const ids = linked || !option.fallback.length ? option.skills : option.fallback;
           note(ids, grant.how, { link: option.link || 0 });
-          return { text: index.skillById.get(ids[0]) ? index.skillById.get(ids[0]).name : "", set: expandDown(index, ids), link: option.link || 0, linked };
-        });
-        groups.push({ owner: "scenario", name: `${scenario.name}: ${grant.how}`, how: grant.how, options });
+          options.push({ text: index.skillById.get(ids[0]) ? index.skillById.get(ids[0]).name : "", set: expandDown(index, ids), link: option.link || 0, linked });
+        }
+        if (options.length) groups.push({ owner: "scenario", name: `${scenario.name}: ${grant.how}`, how: grant.how, options });
       }
     }
     for (const charaId of scenario.teammates) {

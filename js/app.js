@@ -205,7 +205,8 @@
   function howText(origin, scenarioId) {
     if (!origin) return scenarioName(scenarioId);
     const teammate = origin.teammate ? charaByCharaId(origin.teammate) : null;
-    return t(`scenario.how.${origin.how}`, { name: teammate ? teammate.name : "" });
+    const text = t(`scenario.how.${origin.how}`, { name: teammate ? teammate.name : "" });
+    return origin.note ? `${text} (${origin.note})` : text;
   }
 
   function skillIcon(id, extraTitle, extraClass) {

@@ -18,7 +18,15 @@ const GAMETORA_DELAY_MS = 120;
 const TYPE_BY_COMMAND = { 101: "speed", 105: "stamina", 102: "power", 103: "guts", 106: "wit" };
 
 const SCENARIOS = [
-  { id: "ura", name: "URA Finale", grants: [], teammates: [] },
+  {
+    id: "ura",
+    name: "URA Finale",
+    grants: [
+      { how: "meekDuel", skills: [210091, 210101, 210111, 210131, 210121, 210141] },
+      { how: "threeLegged", skills: [200441] },
+    ],
+    teammates: [],
+  },
   {
     id: "unity",
     name: "Unity Cup",
@@ -26,6 +34,16 @@ const SCENARIOS = [
       { how: "extremeBurst", skills: [210012, 210022, 210032, 210042, 210052] },
       { how: "zenith", options: [{ skills: [210011] }, { skills: [210021] }, { skills: [210031] }, { skills: [210041] }, { skills: [210051] }] },
       { how: "teamRankS", skills: [200461] },
+      {
+        how: "teamName",
+        options: [
+          { skills: [200491] },
+          { skills: [200681], link: 1010, requireLink: true },
+          { skills: [201121], link: 1056, requireLink: true },
+          { skills: [200471], link: 1052, requireLink: true },
+          { skills: [200741], link: 1030, requireLink: true },
+        ],
+      },
     ],
     teammates: [1052, 1030, 1056, 1010],
   },
@@ -35,6 +53,9 @@ const SCENARIOS = [
     grants: [
       { how: "umaOfYear", skills: [210062] },
       { how: "climaxWin", skills: [210061] },
+      { how: "epithet", note: "Mile a Minute: win all unique Mile Turf G1 races", skills: [201032] },
+      { how: "epithet", note: "Legendary: Lady or Stunning plus Spring Champion and Autumn Champion epithets", skills: [200512] },
+      { how: "epithet", note: "Dirt G1 Dominator: win 9 Dirt G1 races", skills: [201672] },
     ],
     teammates: [],
   },
@@ -59,6 +80,17 @@ const SCENARIOS = [
 ];
 
 const EXPECTED_SKILL_NAMES = {
+  210091: "Racing Spirit: Speed",
+  210141: "Racing Spirit: Mood",
+  200441: "Iron Will",
+  200491: "No Stopping Me!",
+  200681: "Mile Maven",
+  201121: "Clairvoyance",
+  200471: "Indomitable",
+  200741: "Cooldown",
+  201032: "Mile Straightaways ○",
+  200512: "Homestretch Haste",
+  201672: "Top Pick",
   210012: "Ignited Spirit SPD",
   210011: "Burning Spirit SPD",
   200461: "It's On!",
@@ -248,8 +280,9 @@ function buildScenarios(skillById) {
     grants: sc.grants
       .map((g) => ({
         how: g.how,
+        note: g.note || "",
         skills: (g.skills || []).filter((id) => skillById.has(id)),
-        options: (g.options || []).map((o) => ({ skills: o.skills.filter((id) => skillById.has(id)), link: o.link || 0, fallback: (o.fallback || []).filter((id) => skillById.has(id)) })).filter((o) => o.skills.length),
+        options: (g.options || []).map((o) => ({ skills: o.skills.filter((id) => skillById.has(id)), link: o.link || 0, requireLink: Boolean(o.requireLink), fallback: (o.fallback || []).filter((id) => skillById.has(id)) })).filter((o) => o.skills.length),
       }))
       .filter((g) => g.skills.length || g.options.length),
   }));
