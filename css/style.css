@@ -699,6 +699,20 @@ input:focus {
   color: var(--text-muted);
 }
 
+.notice-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.notice-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .parent-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));

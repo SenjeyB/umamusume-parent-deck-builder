@@ -13,6 +13,9 @@ Live: https://senjeyb.github.io/umamusume-parent-deck-builder/
 5. Cards you do not own can be marked with ✕. They are then only suggested in the borrow slot and the decks are recalculated. Umas you do not own can be marked the same way on the parent candidates and are skipped.
 6. Game rules are respected: the parent is never the trainee's character (in any outfit), a deck never contains a card of the parent's own character, and never two cards of the same character.
 7. When coverage is equal, SSR cards are preferred over SR, and SR over R.
+8. Skills that did not fit into the best deck are listed separately. One click turns them into the wish list for the **second parent**, with the first parent's character excluded from the candidates.
+
+The wish list can hold up to 150 skills. When a gold skill is in the list, its white version is not offered in the search, because the tool already falls back to it when needed.
 
 Everything runs in the browser. Inputs are stored in `localStorage`, and the **Copy link** button encodes the current setup into the URL.
 

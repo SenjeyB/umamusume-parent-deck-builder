@@ -48,6 +48,7 @@
       typeMin: defaultTypeMin(),
       notOwned: [],
       notOwnedCharas: [],
+      firstParentId: 0,
       viewParentId: 0,
     };
   }
@@ -67,6 +68,7 @@
     out.wanted = uniqueIds(src.wanted, index.skillById).slice(0, S.MAX_WANTED);
     out.notOwned = uniqueIds(src.notOwned, index.cardById);
     out.notOwnedCharas = uniqueIds(src.notOwnedCharas, index.charaById);
+    out.firstParentId = index.charaById.has(Number(src.firstParentId)) ? Number(src.firstParentId) : 0;
     out.typeMin = defaultTypeMin();
     if (src.typeMin && typeof src.typeMin === "object") {
       let total = 0;
@@ -308,9 +310,18 @@
         search: `${c.chara} ${c.title} ${t(`rarity.${c.rar}`)} ${t(`type.${c.type}`)} ${c.type}`.toLowerCase(),
       }));
 
+  function upperInWanted(id) {
+    let cur = index.upper.get(id);
+    while (cur !== undefined) {
+      if (state.wanted.includes(cur)) return true;
+      cur = index.upper.get(cur);
+    }
+    return false;
+  }
+
   const skillItems = () =>
     data.skills
-      .filter((s) => s.id >= 200000 && s.id % 10 !== 3 && !state.wanted.includes(s.id) && skillSources(s.id).cards + skillSources(s.id).charas > 0)
+      .filter((s) => s.id >= 200000 && s.id % 10 !== 3 && !state.wanted.includes(s.id) && !upperInWanted(s.id) && skillSources(s.id).cards + skillSources(s.id).charas > 0)
       .map((s) => {
         const tags = [s.cat];
         const white = whiteOf(s);
@@ -370,6 +381,13 @@
     state.targetDeck = state.targetDeck.filter((id) => index.cardById.get(id).charaId !== charaId);
     const parent = index.charaById.get(state.parentId);
     if (parent && parent.charaId === charaId) state.parentId = 0;
+    const first = index.charaById.get(state.firstParentId);
+    if (first && first.charaId === charaId) state.firstParentId = 0;
+  }
+
+  function firstParentCharaIds() {
+    const first = index.charaById.get(state.firstParentId);
+    return first ? [first.charaId] : [];
   }
 
   function update(mutator, options) {
@@ -440,6 +458,10 @@
     const excluded = lastResult.excluded.find((e) => e.id === id);
     if (excluded) {
       const impossible = excluded.reason === "goldWhiteCovered" || excluded.reason === "goldNoWhite";
+      if (excluded.reason === "duplicate") {
+        const other = index.skillById.get(excluded.mergedWith);
+        return h("span", { class: "badge badge-warn", title: excludedText(excluded) }, t("wanted.status.duplicate", { name: other ? other.name : "" }));
+      }
       return h("span", { class: "badge " + (impossible ? "badge-danger" : "badge-ok"), title: excludedText(excluded) }, impossible ? t("wanted.status.impossible") : t("wanted.status.covered"));
     }
     const info = lastResult.effectiveInfo.find((e) => e.fallbackOf === id);
@@ -602,6 +624,7 @@
       typeMin: state.typeMin,
       notOwned: new Set(state.notOwned),
       notOwnedCharas: new Set(state.notOwnedCharas),
+      excludeCharaIds: firstParentCharaIds(),
       maxDecks: 8,
       maxParents: 8,
     });
@@ -622,6 +645,19 @@
   function renderSummary(result) {
     const summary = $("summary");
     const blocks = [];
+    const first = index.charaById.get(state.firstParentId);
+    if (first) {
+      blocks.push(
+        h(
+          "div",
+          { class: "notice info notice-row" },
+          h("span", null, t("results.secondParent", { name: charaLabel(first) })),
+          h("button", { type: "button", class: "btn btn-ghost btn-small", onclick: () => update(() => {
+            state.firstParentId = 0;
+          }) }, t("results.secondParentClear"))
+        )
+      );
+    }
     if (!state.wanted.length) blocks.push(h("div", { class: "notice info" }, t("results.empty")));
     const impossible = result.excluded.filter((e) => e.reason === "goldWhiteCovered" || e.reason === "goldNoWhite");
     const covered = result.excluded.filter((e) => !impossible.includes(e));
@@ -804,6 +840,36 @@
     );
   }
 
+  function originalWantedId(result, effectiveId) {
+    const info = result.effectiveInfo.find((e) => e.id === effectiveId);
+    return info && info.fallbackOf ? info.fallbackOf : effectiveId;
+  }
+
+  function planSecondParent(result, current) {
+    const leftovers = current.decks[0].missing.filter((m) => m.reason !== "none").map((m) => originalWantedId(result, m.id));
+    if (!leftovers.length) return;
+    update(() => {
+      state.firstParentId = current.charaId;
+      state.wanted = leftovers;
+      state.parentId = 0;
+    });
+    showToast(t("results.secondParentSet"));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function renderLeftover(result, current) {
+    const chara = index.charaById.get(current.charaId);
+    const leftovers = current.decks[0].missing.filter((m) => m.reason !== "none");
+    if (!leftovers.length) return null;
+    return h(
+      "div",
+      { class: "notice warn" },
+      h("div", { class: "notice-title" }, t("results.leftover", { name: chara.name })),
+      h("div", { class: "chip-list" }, leftovers.map((m) => skillChip(originalWantedId(result, m.id), t(`deck.missing.${m.reason}`), "muted"))),
+      h("div", { class: "notice-actions" }, h("button", { type: "button", class: "btn btn-small", onclick: () => planSecondParent(result, current) }, t("results.planSecond")))
+    );
+  }
+
   function renderDecks(result, current) {
     const mount = $("decks");
     const title = $("decks-title");
@@ -815,6 +881,8 @@
     const chara = index.charaById.get(current.charaId);
     title.textContent = t("results.decks", { name: charaLabel(chara) });
     const blocks = current.decks.map((deck, i) => renderDeck(deck, i + 1, result));
+    const leftover = renderLeftover(result, current);
+    if (leftover) blocks.push(leftover);
     const rules = renderRulesNotice(result);
     if (rules) blocks.unshift(rules);
     if (current.choices.length) {
