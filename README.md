@@ -15,9 +15,15 @@ Live: https://senjeyb.github.io/umamusume-parent-deck-builder/
 
 Everything runs in the browser. Inputs are stored in `localStorage`, and the **Copy link** button encodes the current setup into the URL.
 
+## How skills are modelled
+
+- **Hints** of a support card and **innate / awakening skills** of an uma are always available.
+- **Career events** of a card or an uma can also give skills (this is how gold skills such as Swinging Maestro from SSR Super Creek appear). Events with several options are exclusive: only one option of an event is counted, and the tool tells you which option it assumed.
+- A parent **cannot pass down a gold skill**, only its white version. A wanted gold skill is therefore kept only when the trainee herself or a card in her deck can give it; otherwise the tool warns and searches for the white version instead (for example Swinging Maestro becomes Corner Recovery ○). Gold skills of a parent are counted as their white versions.
+
 ## Data
 
-`data/gl.js` and the images in `img/` are generated from the public data of [uma.guide](https://uma.guide/) (characters, support cards, skills). The support card database of [uma-tiers](https://github.com/Euophrys/uma-tiers) was used as a reference for card ids and types.
+`data/gl.js` and the images in `img/` are generated from the public data of [uma.guide](https://uma.guide/) (characters, support cards, skills). Skill rewards of career events come from [GameTora](https://gametora.com/umamusume) support card and character pages. The support card database of [uma-tiers](https://github.com/Euophrys/uma-tiers) was used as a reference for card ids and types.
 
 To refresh the dataset:
 
@@ -26,7 +32,7 @@ npm install
 npm run data
 ```
 
-`scripts/build-data.mjs` downloads the current data chunk, rebuilds `data/gl.js` and fetches any missing card thumbnails, character chibis and skill icons (resized with `sharp` when it is installed). Use `--no-images` to skip images or `--force-images` to re-download them.
+`scripts/build-data.mjs` downloads the current data chunk, rebuilds `data/gl.js`, fetches the event data from GameTora (cached in `.cache/`) and downloads any missing card thumbnails, character chibis and skill icons (resized with `sharp` when it is installed). Flags: `--no-images`, `--force-images`, `--no-events` (keep the previous event data), `--force-events` (ignore the GameTora cache).
 
 ## Development
 

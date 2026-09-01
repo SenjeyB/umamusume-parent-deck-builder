@@ -145,11 +145,15 @@
   const charaImg = (id) => `img/chara/${id}.webp`;
   const skillImg = (skill) => `img/skill/${skill.icon || 20011}.webp`;
   const cardLabel = (card) => `${card.chara} ${card.title}`;
-  const isGold = (skill) => skill.rar >= 2 && skill.id < 900000;
+  const charaLabel = (chara) => `${chara.name} ${chara.title}`;
+  const isGold = (skill) => S.isGoldSkill(skill);
   const isInheritedUnique = (skill) => skill.id >= 900000;
+  const whiteOf = (skill) => (isGold(skill) ? index.skillById.get(index.lower.get(skill.id)) || null : null);
 
   function skillSources(id) {
-    return { cards: (index.skillCards.get(id) || []).length, charas: (index.skillCharas.get(id) || []).length };
+    const cards = new Set([...(index.skillCards.get(id) || []), ...(index.skillCardEvents.get(id) || [])]);
+    const charas = new Set([...(index.skillCharas.get(id) || []), ...(index.skillCharaEvents.get(id) || [])]);
+    return { cards: cards.size, charas: charas.size, cardEvents: (index.skillCardEvents.get(id) || []).length, charaEvents: (index.skillCharaEvents.get(id) || []).length };
   }
 
   function sourceBadges(id) {
@@ -173,11 +177,11 @@
     return parts.join(" · ");
   }
 
-  function skillIcon(id, extraTitle) {
+  function skillIcon(id, extraTitle, extraClass) {
     const skill = index.skillById.get(id);
     if (!skill) return null;
     const title = skill.name + (extraTitle ? ` · ${extraTitle}` : "") + (skill.desc ? `\n${skill.desc}` : "");
-    return h("img", { src: skillImg(skill), alt: skill.name, title, loading: "lazy" });
+    return h("img", { class: extraClass || null, src: skillImg(skill), alt: skill.name, title, loading: "lazy" });
   }
 
   function skillNameNode(skill) {
@@ -298,10 +302,11 @@
 
   const skillItems = () =>
     data.skills
-      .filter((s) => s.id >= 200000 && s.id % 10 !== 3 && !state.wanted.includes(s.id) && (index.skillCards.has(s.id) || index.skillCharas.has(s.id)))
+      .filter((s) => s.id >= 200000 && s.id % 10 !== 3 && !state.wanted.includes(s.id) && skillSources(s.id).cards + skillSources(s.id).charas > 0)
       .map((s) => {
         const tags = [s.cat];
-        if (isGold(s)) tags.push(t("skill.gold"));
+        const white = whiteOf(s);
+        if (isGold(s)) tags.push(white ? t("skill.goldWarn", { name: white.name }) : t("skill.goldNoWhite"));
         if (isInheritedUnique(s)) tags.push(t("skill.unique"));
         return {
           id: s.id,
@@ -314,7 +319,7 @@
         };
       });
 
-  let pickers = {};
+  const pickers = {};
 
   function buildPickers() {
     pickers.target = createPicker({
@@ -405,6 +410,30 @@
     });
   }
 
+  function excludedText(entry) {
+    const card = entry.card ? index.cardById.get(entry.card) : null;
+    const params = { card: card ? card.chara : "", event: entry.event || "", n: (entry.optionIndex || 0) + 1 };
+    if (entry.reason === "goldWhiteCovered") params.name = index.skillById.get(entry.white) ? index.skillById.get(entry.white).name : "";
+    if (entry.reason === "duplicate") params.name = index.skillById.get(entry.mergedWith) ? index.skillById.get(entry.mergedWith).name : "";
+    return t(`results.excluded.${entry.reason}`, params);
+  }
+
+  function wantedStatus(id) {
+    if (!lastResult) return null;
+    const excluded = lastResult.excluded.find((e) => e.id === id);
+    if (excluded) {
+      const impossible = excluded.reason === "goldWhiteCovered" || excluded.reason === "goldNoWhite";
+      return h("span", { class: "badge " + (impossible ? "badge-danger" : "badge-ok"), title: excludedText(excluded) }, impossible ? t("wanted.status.impossible") : t("wanted.status.covered"));
+    }
+    const info = lastResult.effectiveInfo.find((e) => e.fallbackOf === id);
+    if (info) {
+      const white = index.skillById.get(info.id);
+      return h("span", { class: "badge badge-warn", title: t("skill.goldWarn", { name: white.name }) }, t("wanted.status.fallback", { name: white.name }));
+    }
+    if (lastResult.unobtainable.includes(id)) return h("span", { class: "badge badge-danger" }, t("wanted.status.impossible"));
+    return null;
+  }
+
   function renderWanted() {
     const list = $("wanted-list");
     if (!state.wanted.length) {
@@ -414,10 +443,13 @@
     list.replaceChildren(
       ...state.wanted.map((id, i) => {
         const skill = index.skillById.get(id);
+        const white = whiteOf(skill);
         const meta = [h("span", { class: "badge" }, skill.cat)];
-        if (isGold(skill)) meta.push(h("span", { class: "badge badge-gold" }, t("skill.gold")));
+        if (isGold(skill)) meta.push(h("span", { class: "badge badge-gold", title: white ? t("skill.goldWarn", { name: white.name }) : t("skill.goldNoWhite") }, t("skill.gold")));
         if (isInheritedUnique(skill)) meta.push(h("span", { class: "badge badge-gold" }, t("skill.unique")));
         meta.push(...sourceBadges(id));
+        const status = wantedStatus(id);
+        if (status) meta.push(status);
         return h(
           "li",
           {
@@ -551,6 +583,7 @@
       maxDecks: 8,
       maxParents: 8,
     });
+    renderWanted();
     renderResults();
   }
 
@@ -568,23 +601,43 @@
     const summary = $("summary");
     const blocks = [];
     if (!state.wanted.length) blocks.push(h("div", { class: "notice info" }, t("results.empty")));
-    if (result.excluded.length) {
+    const impossible = result.excluded.filter((e) => e.reason === "goldWhiteCovered" || e.reason === "goldNoWhite");
+    const covered = result.excluded.filter((e) => !impossible.includes(e));
+    if (covered.length) {
       blocks.push(
         h(
           "div",
           { class: "notice" },
           h("div", { class: "notice-title" }, t("results.excluded")),
-          h("div", { class: "chip-list" }, result.excluded.map((e) => skillChip(e.id, t(`results.excluded.${e.reason}`), "muted")))
+          h("div", { class: "chip-list" }, covered.map((e) => skillChip(e.id, excludedText(e), "muted")))
         )
       );
     }
-    if (result.unobtainable.length) {
+    if (result.traineeChoices.length) {
+      blocks.push(
+        h(
+          "div",
+          { class: "notice info" },
+          h("div", { class: "notice-title" }, t("results.traineeChoices")),
+          h(
+            "div",
+            { class: "chip-list" },
+            result.traineeChoices.map((pick) => {
+              const card = pick.card ? index.cardById.get(pick.card) : null;
+              const label = (card ? `${card.chara}: ` : "") + t("results.choice", { event: pick.name, n: pick.optionIndex + 1 });
+              return h("span", { class: "chip", title: pick.option }, h("span", { class: "chip-text" }, label, h("span", { class: "chip-sub" }, pick.skills.map((id) => index.skillById.get(id).name).join(", "))));
+            })
+          )
+        )
+      );
+    }
+    if (impossible.length || result.unobtainable.length) {
       blocks.push(
         h(
           "div",
           { class: "notice warn" },
           h("div", { class: "notice-title" }, t("results.unobtainable")),
-          h("div", { class: "chip-list" }, result.unobtainable.map((id) => skillChip(id, null, "muted")))
+          h("div", { class: "chip-list" }, impossible.map((e) => skillChip(e.id, excludedText(e), "muted")), result.unobtainable.map((id) => skillChip(id, t("skill.sources.none"), "muted")))
         )
       );
     }
@@ -605,6 +658,7 @@
     mount.replaceChildren(
       ...result.parents.map((p) => {
         const chara = index.charaById.get(p.charaId);
+        const choiceTitle = p.choices.map((c) => `${c.name}: ${c.option}`).join("\n");
         return h(
           "button",
           {
@@ -623,7 +677,14 @@
             h("div", { class: "name" }, chara.name),
             h("div", { class: "title" }, chara.title),
             h("div", { class: "stats" }, h("span", { class: "badge" }, t("parent.covers", { a: p.coveredCount, b: result.effective.length })), h("span", { class: "badge" }, t("parent.cards", { n: p.cardCount }))),
-            p.innate.length ? h("div", { class: "innate", title: t("parent.innate") }, p.innate.map((id) => skillIcon(id, t("deck.fromParent")))) : null
+            p.innate.length || p.viaEvents.length
+              ? h(
+                  "div",
+                  { class: "innate", title: choiceTitle || t("parent.innate") },
+                  p.innate.map((id) => skillIcon(id, t("deck.fromParent"))),
+                  p.viaEvents.map((id) => skillIcon(id, t("deck.fromParentEvent"), "via-event"))
+                )
+              : null
           )
         );
       })
@@ -652,7 +713,10 @@
         h("img", { class: "thumb", src: cardImg(card.id), alt: cardLabel(card), loading: "lazy" }),
         h("div", { class: "slot-name" }, card.chara, h("small", { title: card.title }, card.title)),
         h("div", { class: "chip-list", style: "justify-content:center;margin:0" }, h("span", { class: `badge badge-rarity rar-${card.rar}` }, t(`rarity.${card.rar}`)), h("span", { class: `badge badge-type type-${card.type}` }, t(`type.short.${card.type}`))),
-        h("div", { class: "slot-skills" }, slot.skills.map((id) => skillIcon(id))),
+        slot.choices.length
+          ? h("div", { class: "slot-choices" }, slot.choices.map((choice) => h("div", { class: "slot-choice", title: choice.option }, t("deck.eventChoice", { event: choice.name, n: choice.optionIndex + 1 }))))
+          : null,
+        h("div", { class: "slot-skills" }, slot.skills.map((id) => skillIcon(id, slot.eventSkills.includes(id) ? t("deck.viaEvent") : null, slot.eventSkills.includes(id) ? "via-event" : null))),
         slot.alts.length
           ? h("button", { type: "button", class: "slot-alts", title: t("deck.alts", { n: slot.alts.length }), onclick: () => {
             altList.hidden = !altList.hidden;
@@ -670,7 +734,9 @@
   function renderDeck(deck, rank, result) {
     const covered = deck.covered.map((c) => {
       const skill = index.skillById.get(c.id);
-      const note = c.from === "parent" ? t("deck.fromParent") : c.cards.map((id) => index.cardById.get(id).chara).join(", ");
+      let note;
+      if (c.from === "parent") note = c.viaEvent ? t("deck.fromParentEvent") : t("deck.fromParent");
+      else note = c.cards.map((id) => index.cardById.get(id).chara).join(", ") + (c.viaEvent ? ` (${t("deck.viaEvent")})` : "");
       return h("div", { class: "skill-row" }, skillIcon(c.id), skillNameNode(skill), h("span", { class: "note" }, note));
     });
     const missing = deck.missing.map((m) => {
@@ -707,8 +773,18 @@
       return;
     }
     const chara = index.charaById.get(current.charaId);
-    title.textContent = t("results.decks", { name: `${chara.name} ${chara.title}` });
+    title.textContent = t("results.decks", { name: charaLabel(chara) });
     const blocks = current.decks.map((deck, i) => renderDeck(deck, i + 1, result));
+    if (current.choices.length) {
+      blocks.unshift(
+        h(
+          "div",
+          { class: "notice info" },
+          h("div", { class: "notice-title" }, `${chara.name}: ${t("parent.viaEvents")}`),
+          h("div", { class: "chip-list" }, current.choices.map((c) => h("span", { class: "chip", title: c.option }, h("span", { class: "chip-text" }, t("results.choice", { event: c.name, n: (c.optionIndex || 0) + 1 }), h("span", { class: "chip-sub" }, c.skills.map((id) => index.skillById.get(id).name).join(", "))))))
+        )
+      );
+    }
     if (!current.complete) blocks.unshift(h("div", { class: "notice warn" }, t("results.incomplete")));
     mount.replaceChildren(...blocks);
   }

@@ -1,4 +1,4 @@
-import { mkdir, writeFile, access, copyFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile, access, copyFile } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
@@ -7,9 +7,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CACHE = path.join(ROOT, ".cache");
+const DATA_FILE = path.join(ROOT, "data", "gl.js");
 const SITE = "https://uma.guide";
 const ENTRY_PAGE = `${SITE}/support-cards/`;
+const GAMETORA = "https://gametora.com";
 const CONCURRENCY = 8;
+const GAMETORA_CONCURRENCY = 4;
+const GAMETORA_DELAY_MS = 120;
 
 const TYPE_BY_COMMAND = { 101: "speed", 105: "stamina", 102: "power", 103: "guts", 106: "wit" };
 const IMAGE_SIZES = { card: [120, 160], skill: [64, 64], chara: [72, 116] };
@@ -17,6 +21,8 @@ const IMAGE_SIZES = { card: [120, 160], skill: [64, 64], chara: [72, 116] };
 const args = new Set(process.argv.slice(2));
 const skipImages = args.has("--no-images");
 const forceImages = args.has("--force-images");
+const skipEvents = args.has("--no-events");
+const forceEvents = args.has("--force-events");
 
 async function exists(file) {
   try {
@@ -25,6 +31,10 @@ async function exists(file) {
   } catch {
     return false;
   }
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function fetchText(url) {
@@ -58,6 +68,17 @@ async function loadSharp() {
     return mod.default;
   } catch {
     console.warn("sharp is not installed, images are stored without resizing");
+    return null;
+  }
+}
+
+async function loadPreviousDataset() {
+  try {
+    const text = await readFile(DATA_FILE, "utf8");
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    return JSON.parse(text.slice(start, end + 1));
+  } catch {
     return null;
   }
 }
@@ -110,6 +131,7 @@ function buildDataset({ cards, charas, skills, overrides }) {
       type: cardType(c),
       date: String(c.startDate || "").slice(0, 10),
       hints: (c.skillHints || []).map((h) => h.skillId).filter((id) => id && skillById.has(id)),
+      events: [],
     }))
     .sort((a, b) => a.id - b.id);
 
@@ -127,6 +149,7 @@ function buildDataset({ cards, charas, skills, overrides }) {
           .filter((p) => skillById.has(p.skillId))
           .map((p) => ({ id: p.skillId, rank: p.needRank }))
           .sort((a, b) => a.rank - b.rank || a.id - b.id),
+        events: [],
       };
     })
     .sort((a, b) => a.id - b.id);
@@ -149,6 +172,7 @@ function buildDataset({ cards, charas, skills, overrides }) {
   return {
     server: "gl",
     source: SITE,
+    eventSource: GAMETORA,
     generated: new Date().toISOString().slice(0, 10),
     skills: outSkills,
     cards: outCards,
@@ -156,7 +180,7 @@ function buildDataset({ cards, charas, skills, overrides }) {
   };
 }
 
-async function runPool(items, worker) {
+async function runPool(items, worker, concurrency) {
   let index = 0;
   const failures = [];
   async function next() {
@@ -169,8 +193,124 @@ async function runPool(items, worker) {
       }
     }
   }
-  await Promise.all(Array.from({ length: CONCURRENCY }, next));
+  await Promise.all(Array.from({ length: concurrency }, next));
   return failures;
+}
+
+async function gametoraUrls() {
+  const indexXml = await fetchText(`${GAMETORA}/sitemap.xml`);
+  const subs = [...indexXml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]).filter((u) => /sitemap-\d+\.xml$/.test(u));
+  const supports = new Map();
+  const charas = new Map();
+  for (const sub of subs.length ? subs : [`${GAMETORA}/sitemap-0.xml`]) {
+    const xml = await fetchText(sub);
+    for (const m of xml.matchAll(/https:\/\/gametora\.com\/umamusume\/(supports|characters)\/(\d+)-[^<\s"]+/g)) {
+      (m[1] === "supports" ? supports : charas).set(Number(m[2]), m[0]);
+    }
+  }
+  return { supports, charas };
+}
+
+async function gametoraPage(kind, id, url) {
+  const cacheFile = path.join(CACHE, "gametora", `${kind}-${id}.json`);
+  if (!forceEvents && (await exists(cacheFile))) return JSON.parse(await readFile(cacheFile, "utf8"));
+  const html = await fetchText(url);
+  const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/s);
+  if (!match) throw new Error(`page data not found for ${url}`);
+  const props = JSON.parse(match[1]).props.pageProps;
+  const page = { item: props.itemData || null, events: props.eventData || null };
+  await mkdir(path.dirname(cacheFile), { recursive: true });
+  await writeFile(cacheFile, JSON.stringify(page));
+  await delay(GAMETORA_DELAY_MS);
+  return page;
+}
+
+function parseLocalizedEvents(eventData, lang) {
+  const raw = eventData && eventData[lang];
+  if (!raw) return null;
+  try {
+    return typeof raw === "string" ? JSON.parse(raw) : raw;
+  } catch {
+    return null;
+  }
+}
+
+function parseEvents(eventData, skillById) {
+  const base = parseLocalizedEvents(eventData, "ja") || parseLocalizedEvents(eventData, "en");
+  if (!base) return [];
+  const en = parseLocalizedEvents(eventData, "en");
+  const englishNames = new Map();
+  if (en) {
+    for (const list of Object.values(en)) {
+      if (!Array.isArray(list)) continue;
+      for (const e of list) if (e && typeof e === "object" && e.i !== undefined && e.n) englishNames.set(e.i, e.n);
+    }
+  }
+  const events = [];
+  for (const [group, list] of Object.entries(base)) {
+    if (!Array.isArray(list)) continue;
+    for (const e of list) {
+      if (!e || typeof e !== "object" || !Array.isArray(e.c)) continue;
+      const options = [];
+      for (const choice of e.c) {
+        const ids = [];
+        for (const reward of choice.r || []) {
+          const id = Number(reward && reward.t === "sk" ? reward.d : NaN);
+          if (skillById.has(id) && !ids.includes(id)) ids.push(id);
+        }
+        if (ids.length) options.push({ t: String(choice.o || ""), s: ids });
+      }
+      if (!options.length) continue;
+      events.push({ n: englishNames.get(e.i) || String(e.n || ""), g: group, o: options });
+    }
+  }
+  return events;
+}
+
+async function addEvents(dataset, previous) {
+  const skillById = new Map(dataset.skills.map((s) => [s.id, s]));
+  const previousCards = new Map((previous ? previous.cards : []).map((c) => [c.id, c.events || []]));
+  const previousCharas = new Map((previous ? previous.charas : []).map((c) => [c.id, c.events || []]));
+  let urls;
+  try {
+    urls = await gametoraUrls();
+  } catch (err) {
+    console.warn(`GameTora sitemap unavailable (${err.message}), keeping previous event data`);
+    for (const card of dataset.cards) card.events = previousCards.get(card.id) || [];
+    for (const chara of dataset.charas) chara.events = previousCharas.get(chara.id) || [];
+    return;
+  }
+  const jobs = [];
+  for (const card of dataset.cards) jobs.push({ kind: "support", target: card, url: urls.supports.get(card.id), previous: previousCards.get(card.id) || [] });
+  for (const chara of dataset.charas) jobs.push({ kind: "character", target: chara, url: urls.charas.get(chara.id), previous: previousCharas.get(chara.id) || [] });
+
+  let fetched = 0;
+  let hintMismatches = 0;
+  const failures = await runPool(
+    jobs,
+    async (job) => {
+      if (!job.url) throw new Error(`no GameTora page for ${job.kind} ${job.target.id}`);
+      const page = await gametoraPage(job.kind, job.target.id, job.url);
+      job.target.events = parseEvents(page.events, skillById);
+      if (job.kind === "support" && page.item && page.item.hints && Array.isArray(page.item.hints.hint_skills)) {
+        const a = job.target.hints.slice().sort().join(",");
+        const b = page.item.hints.hint_skills.slice().sort().join(",");
+        if (a !== b) {
+          hintMismatches++;
+          console.warn(`  hint mismatch for card ${job.target.id}: uma.guide [${a}] vs GameTora [${b}]`);
+        }
+      }
+      fetched++;
+    },
+    GAMETORA_CONCURRENCY
+  );
+  for (const f of failures) {
+    f.item.target.events = f.item.previous;
+    console.warn(`  events failed for ${f.item.kind} ${f.item.target.id}: ${f.err.message}`);
+  }
+  const cardEvents = dataset.cards.filter((c) => c.events.length).length;
+  const charaEvents = dataset.charas.filter((c) => c.events.length).length;
+  console.log(`events: ${fetched} pages, ${failures.length} failed, ${hintMismatches} hint mismatches, cards with skill events ${cardEvents}, characters with skill events ${charaEvents}`);
 }
 
 async function processImages(dataset, sharp) {
@@ -191,20 +331,24 @@ async function processImages(dataset, sharp) {
   }
 
   let done = 0;
-  const failures = await runPool(jobs, async (job) => {
-    if (!forceImages && (await exists(job.dest))) return;
-    const raw = path.join(CACHE, "img", job.kind, path.basename(job.dest));
-    await mkdir(path.dirname(raw), { recursive: true });
-    if (forceImages || !(await exists(raw))) await downloadWithFallbacks([job.url, ...(job.fallbacks || [])], raw);
-    if (sharp) {
-      const [w, h] = IMAGE_SIZES[job.kind];
-      await sharp(raw).resize(w, h, { fit: "inside" }).webp({ quality: 82 }).toFile(job.dest);
-    } else {
-      await copyFile(raw, job.dest);
-    }
-    done++;
-    if (done % 50 === 0) console.log(`  ${done} images processed`);
-  });
+  const failures = await runPool(
+    jobs,
+    async (job) => {
+      if (!forceImages && (await exists(job.dest))) return;
+      const raw = path.join(CACHE, "img", job.kind, path.basename(job.dest));
+      await mkdir(path.dirname(raw), { recursive: true });
+      if (forceImages || !(await exists(raw))) await downloadWithFallbacks([job.url, ...(job.fallbacks || [])], raw);
+      if (sharp) {
+        const [w, h] = IMAGE_SIZES[job.kind];
+        await sharp(raw).resize(w, h, { fit: "inside" }).webp({ quality: 82 }).toFile(job.dest);
+      } else {
+        await copyFile(raw, job.dest);
+      }
+      done++;
+      if (done % 50 === 0) console.log(`  ${done} images processed`);
+    },
+    CONCURRENCY
+  );
   for (const f of failures) console.warn(`  image failed: ${f.item.url} (${f.err.message})`);
   console.log(`images: ${jobs.length} total, ${done} written, ${failures.length} failed`);
 }
@@ -214,6 +358,7 @@ async function main() {
   await mkdir(path.join(ROOT, "data"), { recursive: true });
   for (const dir of ["card", "skill", "chara"]) await mkdir(path.join(ROOT, "img", dir), { recursive: true });
 
+  const previous = await loadPreviousDataset();
   const chunkUrl = await discoverChunk();
   console.log(`data chunk: ${chunkUrl}`);
   const chunkFile = path.join(CACHE, "uma-data.mjs");
@@ -224,8 +369,17 @@ async function main() {
   const dataset = buildDataset(tables);
   console.log(`skills: ${dataset.skills.length}, cards: ${dataset.cards.length}, characters: ${dataset.charas.length}`);
 
+  if (skipEvents) {
+    const previousCards = new Map((previous ? previous.cards : []).map((c) => [c.id, c.events || []]));
+    const previousCharas = new Map((previous ? previous.charas : []).map((c) => [c.id, c.events || []]));
+    for (const card of dataset.cards) card.events = previousCards.get(card.id) || [];
+    for (const chara of dataset.charas) chara.events = previousCharas.get(chara.id) || [];
+  } else {
+    await addEvents(dataset, previous);
+  }
+
   const json = JSON.stringify(dataset);
-  await writeFile(path.join(ROOT, "data", "gl.js"), `window.UMA_DATA=${json};\n`);
+  await writeFile(DATA_FILE, `window.UMA_DATA=${json};\n`);
   await writeFile(path.join(CACHE, "gl.pretty.json"), JSON.stringify(dataset, null, 2));
   console.log(`data/gl.js written (${(json.length / 1024).toFixed(0)} KB)`);
 

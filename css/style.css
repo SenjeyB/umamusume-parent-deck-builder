@@ -218,6 +218,39 @@ a {
   border-color: var(--danger);
 }
 
+.badge-warn {
+  color: #ffb84d;
+  border-color: #ffb84d;
+}
+
+.badge-ok {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+img.via-event {
+  outline: 2px dashed #ffb84d;
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+
+.slot-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+}
+
+.slot-choice {
+  font-size: 0.66rem;
+  line-height: 1.25;
+  color: #ffb84d;
+  background: rgba(255, 184, 77, 0.08);
+  border: 1px dashed rgba(255, 184, 77, 0.5);
+  border-radius: 6px;
+  padding: 2px 4px;
+}
+
 .type-dot {
   display: inline-block;
   width: 10px;
