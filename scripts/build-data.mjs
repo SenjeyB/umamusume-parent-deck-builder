@@ -125,6 +125,7 @@ function buildDataset({ cards, charas, skills, overrides }) {
   const outCards = cards
     .map((c) => ({
       id: c.supportCardId,
+      charaId: c.charaId,
       chara: groupNames.get(c.supportCardId) || c.charaName,
       title: c.supportCardTitle,
       rar: c.rarity,

@@ -47,6 +47,7 @@
       parentAwakening: 5,
       typeMin: defaultTypeMin(),
       notOwned: [],
+      notOwnedCharas: [],
       viewParentId: 0,
     };
   }
@@ -65,6 +66,7 @@
     out.targetDeck = uniqueIds(src.targetDeck, index.cardById).slice(0, MAX_DECK);
     out.wanted = uniqueIds(src.wanted, index.skillById).slice(0, S.MAX_WANTED);
     out.notOwned = uniqueIds(src.notOwned, index.cardById);
+    out.notOwnedCharas = uniqueIds(src.notOwnedCharas, index.charaById);
     out.typeMin = defaultTypeMin();
     if (src.typeMin && typeof src.typeMin === "object") {
       let total = 0;
@@ -277,18 +279,24 @@
     };
   }
 
-  const charaItems = () =>
-    data.charas.map((c) => ({
-      id: c.id,
-      label: c.name,
-      sub: c.title,
-      img: charaImg(c.id),
-      search: `${c.name} ${c.title}`.toLowerCase(),
-    }));
+  const targetCharaId = () => (index.charaById.get(state.targetId) || {}).charaId || 0;
+
+  const charaItems = (forParent) =>
+    data.charas
+      .filter((c) => !forParent || c.charaId !== targetCharaId())
+      .map((c) => ({
+        id: c.id,
+        label: c.name,
+        sub: c.title,
+        img: charaImg(c.id),
+        search: `${c.name} ${c.title}`.toLowerCase(),
+        badge: forParent && state.notOwnedCharas.includes(c.id) ? t("notOwned.badge") : null,
+        badgeClass: "badge-warn",
+      }));
 
   const cardItems = () =>
     data.cards
-      .filter((c) => !state.targetDeck.includes(c.id))
+      .filter((c) => !state.targetDeck.includes(c.id) && c.charaId !== targetCharaId() && !state.targetDeck.some((id) => index.cardById.get(id).charaId === c.charaId))
       .slice()
       .sort((a, b) => b.rar - a.rar || a.chara.localeCompare(b.chara) || a.id - b.id)
       .map((c) => ({
@@ -325,7 +333,7 @@
     pickers.target = createPicker({
       mount: $("target-picker"),
       placeholderKey: "target.pick",
-      getItems: charaItems,
+      getItems: () => charaItems(false),
       onSelect: (item) => update(() => {
         state.targetId = item.id;
       }),
@@ -349,15 +357,24 @@
     pickers.parent = createPicker({
       mount: $("parent-picker"),
       placeholderKey: "parent.pick",
-      getItems: charaItems,
+      getItems: () => charaItems(true),
       onSelect: (item) => update(() => {
         state.parentId = item.id;
       }),
     });
   }
 
+  function normalizeState() {
+    const charaId = targetCharaId();
+    if (!charaId) return;
+    state.targetDeck = state.targetDeck.filter((id) => index.cardById.get(id).charaId !== charaId);
+    const parent = index.charaById.get(state.parentId);
+    if (parent && parent.charaId === charaId) state.parentId = 0;
+  }
+
   function update(mutator, options) {
     mutator();
+    normalizeState();
     if (!(options && options.keepView)) state.viewParentId = 0;
     saveState();
     renderInputs();
@@ -514,6 +531,10 @@
     $("parent-awakening").value = String(state.parentAwakening);
   }
 
+  function renderRulesNotice(result) {
+    return result.manualIgnored ? h("div", { class: "notice warn" }, t("parent.sameAsTrainee")) : null;
+  }
+
   function buildTypeMins() {
     const grid = $("type-mins");
     grid.replaceChildren(
@@ -580,6 +601,7 @@
       parent: { charaId: state.parentId, awakening: state.parentAwakening },
       typeMin: state.typeMin,
       notOwned: new Set(state.notOwned),
+      notOwnedCharas: new Set(state.notOwnedCharas),
       maxDecks: 8,
       maxParents: 8,
     });
@@ -660,16 +682,27 @@
         const chara = index.charaById.get(p.charaId);
         const choiceTitle = p.choices.map((c) => `${c.name}: ${c.option}`).join("\n");
         return h(
-          "button",
+          "div",
           {
-            type: "button",
             class: "parent-card" + (current && current.charaId === p.charaId ? " selected" : ""),
+            role: "button",
+            tabindex: "0",
             onclick: () => {
               state.viewParentId = p.charaId;
               saveState();
               renderResults();
             },
+            onkeydown: (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                e.currentTarget.click();
+              }
+            },
           },
+          h("button", { type: "button", class: "parent-remove", title: t("parent.notOwn"), onclick: (e) => {
+            e.stopPropagation();
+            markNotOwnedChara(p.charaId);
+          } }, "✕"),
           h("img", { src: charaImg(chara.id), alt: "", loading: "lazy" }),
           h(
             "div",
@@ -694,6 +727,13 @@
   function markNotOwned(cardId) {
     update(() => {
       if (!state.notOwned.includes(cardId)) state.notOwned.push(cardId);
+    }, { keepView: true });
+  }
+
+  function markNotOwnedChara(charaCardId) {
+    update(() => {
+      if (!state.notOwnedCharas.includes(charaCardId)) state.notOwnedCharas.push(charaCardId);
+      if (state.viewParentId === charaCardId) state.viewParentId = 0;
     }, { keepView: true });
   }
 
@@ -775,6 +815,8 @@
     const chara = index.charaById.get(current.charaId);
     title.textContent = t("results.decks", { name: charaLabel(chara) });
     const blocks = current.decks.map((deck, i) => renderDeck(deck, i + 1, result));
+    const rules = renderRulesNotice(result);
+    if (rules) blocks.unshift(rules);
     if (current.choices.length) {
       blocks.unshift(
         h(
@@ -791,24 +833,54 @@
 
   function renderNotOwned() {
     const mount = $("not-owned");
-    if (!state.notOwned.length) {
+    if (!state.notOwned.length && !state.notOwnedCharas.length) {
       mount.replaceChildren(h("span", { class: "hint" }, t("notOwned.empty")));
       return;
     }
-    mount.replaceChildren(
-      ...state.notOwned.map((id) => {
-        const card = index.cardById.get(id);
-        return h(
-          "span",
-          { class: `chip type-${card.type}` },
-          h("img", { src: cardImg(card.id), alt: "" }),
-          h("span", { class: "chip-text" }, card.chara, h("span", { class: "chip-sub" }, `${card.title} · ${t(`rarity.${card.rar}`)}`)),
-          h("button", { type: "button", class: "icon-btn", title: t("notOwned.restore"), onclick: () => update(() => {
-            state.notOwned = state.notOwned.filter((x) => x !== id);
-          }, { keepView: true }) }, "↩")
-        );
-      })
-    );
+    const blocks = [];
+    if (state.notOwned.length) {
+      blocks.push(
+        h("h4", { class: "not-owned-title" }, t("notOwned.cards")),
+        h(
+          "div",
+          { class: "chip-list" },
+          state.notOwned.map((id) => {
+            const card = index.cardById.get(id);
+            return h(
+              "span",
+              { class: `chip type-${card.type}` },
+              h("img", { src: cardImg(card.id), alt: "" }),
+              h("span", { class: "chip-text" }, card.chara, h("span", { class: "chip-sub" }, `${card.title} · ${t(`rarity.${card.rar}`)}`)),
+              h("button", { type: "button", class: "icon-btn", title: t("notOwned.restore"), onclick: () => update(() => {
+                state.notOwned = state.notOwned.filter((x) => x !== id);
+              }, { keepView: true }) }, "↩")
+            );
+          })
+        )
+      );
+    }
+    if (state.notOwnedCharas.length) {
+      blocks.push(
+        h("h4", { class: "not-owned-title" }, t("notOwned.umas")),
+        h(
+          "div",
+          { class: "chip-list" },
+          state.notOwnedCharas.map((id) => {
+            const chara = index.charaById.get(id);
+            return h(
+              "span",
+              { class: "chip" },
+              h("img", { class: "chibi", src: charaImg(chara.id), alt: "" }),
+              h("span", { class: "chip-text" }, chara.name, h("span", { class: "chip-sub" }, chara.title)),
+              h("button", { type: "button", class: "icon-btn", title: t("notOwned.restore"), onclick: () => update(() => {
+                state.notOwnedCharas = state.notOwnedCharas.filter((x) => x !== id);
+              }, { keepView: true }) }, "↩")
+            );
+          })
+        )
+      );
+    }
+    mount.replaceChildren(...blocks);
   }
 
   function renderResults() {
@@ -839,7 +911,7 @@
 
   function resetInputs() {
     if (!confirm(t("action.resetConfirm"))) return;
-    const keep = { lang: state.lang, notOwned: state.notOwned };
+    const keep = { lang: state.lang, notOwned: state.notOwned, notOwnedCharas: state.notOwnedCharas };
     state = Object.assign(defaultState(), keep);
     saveState();
     renderInputs();
@@ -872,6 +944,7 @@
     $("btn-reset").addEventListener("click", resetInputs);
     $("btn-clear-not-owned").addEventListener("click", () => update(() => {
       state.notOwned = [];
+      state.notOwnedCharas = [];
     }, { keepView: true }));
     for (const btn of document.querySelectorAll("#lang-switch [data-lang]")) {
       btn.classList.toggle("active", btn.dataset.lang === state.lang);

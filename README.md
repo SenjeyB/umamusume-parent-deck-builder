@@ -10,8 +10,9 @@ Live: https://senjeyb.github.io/umamusume-parent-deck-builder/
 2. Skills the trainee already has (or their upgraded / gold versions) and skills hinted by her own deck are removed from the list.
 3. For every playable uma the tool computes how many wanted skills she has innately and finds the best deck of up to 6 support cards (5 owned + 1 borrow) that hints the remaining ones. Parents are ranked by the total coverage; you can also force a specific parent.
 4. Decks respect the **minimum number of cards per type** you set (default: 1 Speed). Slots that are reserved for a type but do not need a specific card are shown with the type icon, unneeded slots are shown as free slots.
-5. Cards you do not own can be marked with ✕. They are then only suggested in the borrow slot and the decks are recalculated.
-6. When coverage is equal, SSR cards are preferred over SR, and SR over R.
+5. Cards you do not own can be marked with ✕. They are then only suggested in the borrow slot and the decks are recalculated. Umas you do not own can be marked the same way on the parent candidates and are skipped.
+6. Game rules are respected: the parent is never the trainee's character (in any outfit), a deck never contains a card of the parent's own character, and never two cards of the same character.
+7. When coverage is equal, SSR cards are preferred over SR, and SR over R.
 
 Everything runs in the browser. Inputs are stored in `localStorage`, and the **Copy link** button encodes the current setup into the URL.
 

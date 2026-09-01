@@ -203,15 +203,16 @@
     for (const combo of combos) {
       if (!combo.mask || seen.has(combo.mask)) continue;
       seen.add(combo.mask);
-      variants.push({ id: card.id, type: card.type, rar: card.rar, owned, mask: combo.mask, hintMask: baseMask, weight: maskWeight(combo.mask, weights), choices: combo.choices, alts: [] });
+      variants.push({ id: card.id, charaId: card.charaId || 0, type: card.type, rar: card.rar, owned, mask: combo.mask, hintMask: baseMask, weight: maskWeight(combo.mask, weights), choices: combo.choices, alts: [] });
     }
     return variants;
   }
 
-  function buildCandidates(index, position, weights, remainingMask, notOwned) {
+  function buildCandidates(index, position, weights, remainingMask, notOwned, excludeCharaId) {
     const raw = [];
     for (const card of index.data.cards) {
       if (!card.hints.length && !(card.events || []).length) continue;
+      if (excludeCharaId && card.charaId === excludeCharaId) continue;
       raw.push(...cardVariants(index, card, position, weights, remainingMask, !notOwned.has(card.id)));
     }
     raw.sort((a, b) => popcount(b.mask) - popcount(a.mask) || b.rar - a.rar || (b.owned ? 1 : 0) - (a.owned ? 1 : 0) || a.choices.length - b.choices.length || b.id - a.id);
@@ -242,6 +243,7 @@
     if (state.count >= DECK_SIZE) return false;
     if (!cand.owned && state.borrowed) return false;
     if (state.cards.includes(cand.id)) return false;
+    if (cand.charaId && state.charas.includes(cand.charaId)) return false;
     const current = state.typeCounts[cand.type] || 0;
     if (current >= constraints.mins[cand.type] && state.overflow + 1 > constraints.free) return false;
     return true;
@@ -260,12 +262,13 @@
       score: state.score + gain,
       raritySum: state.raritySum + cand.rar,
       cards: state.cards.concat(cand.id),
+      charas: state.charas.concat(cand.charaId || []),
       chosen: state.chosen.concat(cand),
     };
   }
 
   function emptyState() {
-    return { covered: 0, count: 0, typeCounts: {}, overflow: 0, borrowed: false, score: 0, raritySum: 0, cards: [], chosen: [] };
+    return { covered: 0, count: 0, typeCounts: {}, overflow: 0, borrowed: false, score: 0, raritySum: 0, cards: [], charas: [], chosen: [] };
   }
 
   function greedy(cands, weights, constraints) {
@@ -443,6 +446,7 @@
   function solve(index, opts) {
     const weightMode = opts.weightMode || "balanced";
     const notOwned = opts.notOwned instanceof Set ? opts.notOwned : new Set(opts.notOwned || []);
+    const notOwnedCharas = opts.notOwnedCharas instanceof Set ? opts.notOwnedCharas : new Set(opts.notOwnedCharas || []);
     const constraints = makeConstraints(opts.typeMin || {});
     const maxDecks = opts.maxDecks || 10;
     const maxParents = opts.maxParents || 8;
@@ -528,21 +532,25 @@
     const charaSourceSet = new Set(effective.filter((id) => index.skillCharas.has(id) || index.skillCharaEvents.has(id)));
     const unobtainable = effective.filter((id) => !cardSourceSet.has(id) && !charaSourceSet.has(id));
 
-    const parents = index.data.charas.map((chara) => {
+    const targetCharaId = targetChara ? targetChara.charaId : 0;
+    const manualChara = parentOpts.charaId ? index.charaById.get(parentOpts.charaId) : null;
+    const manualId = manualChara && manualChara.charaId !== targetCharaId ? manualChara.id : 0;
+    const eligible = index.data.charas.filter((chara) => chara.charaId !== targetCharaId && (!notOwnedCharas.has(chara.id) || chara.id === manualId));
+    const parents = eligible.map((chara) => {
       const sources = charaSources(index, chara, parentAwakening, "parent");
       const freeMask = setMask(whiteOnly(index, sources.free), position);
       const picks = resolveGroups(sources.groups, position, weights, freeMask, (set) => whiteOnly(index, set));
       const parentMask = freeMask | picks.mask;
       const parentScore = maskWeight(parentMask, weights);
       const remainingMask = fullMask & ~parentMask;
-      const cands = buildCandidates(index, position, weights, remainingMask, notOwned);
+      const cands = buildCandidates(index, position, weights, remainingMask, notOwned, chara.charaId);
       const seed = greedy(cands, weights, constraints);
       return { chara, parentMask, parentEventMask: picks.mask, parentPicks: picks.picks, parentScore, cands, estimate: parentScore + seed.score, estimateCards: seed.count, exact: null };
     });
 
     parents.sort((a, b) => b.estimate - a.estimate || a.estimateCards - b.estimateCards || popcount(b.parentMask) - popcount(a.parentMask) || a.chara.id - b.chara.id);
     const detailed = parents.slice(0, maxParents);
-    const manual = parentOpts.charaId ? parents.find((p) => p.chara.id === parentOpts.charaId) : null;
+    const manual = manualId ? parents.find((p) => p.chara.id === manualId) : null;
     if (manual && !detailed.includes(manual)) detailed.push(manual);
     for (const p of detailed) {
       const ctx = { effective, constraints, parentMask: p.parentMask, parentEventMask: p.parentEventMask, parentScore: p.parentScore, cardSources: cardSourceSet, charaSources: charaSourceSet };
@@ -578,6 +586,8 @@
       constraints,
       parents: parentSummaries,
       selectedParent: manual ? manual.chara.id : parentSummaries.length ? parentSummaries[0].charaId : null,
+      manualIgnored: Boolean(parentOpts.charaId && !manualId),
+      targetCharaId,
       maxScore: maskWeight(fullMask, weights),
     };
   }

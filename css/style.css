@@ -706,15 +706,53 @@ input:focus {
 }
 
 .parent-card {
+  position: relative;
   display: flex;
   gap: 10px;
-  padding: 10px;
+  padding: 10px 28px 10px 10px;
   border-radius: 12px;
   background: var(--bg-input);
   border: 1px solid var(--border);
   cursor: pointer;
   text-align: left;
   transition: border-color 0.15s;
+}
+
+.parent-card:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+.parent-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 6px;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.parent-remove:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.not-owned-title {
+  margin: 8px 0 6px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.chip img.chibi {
+  width: 26px;
+  height: 40px;
+  object-fit: contain;
 }
 
 .parent-card:hover {
