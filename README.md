@@ -40,7 +40,9 @@ and open http://localhost:8080/.
 
 ## Deployment
 
-The repository ships a GitHub Actions workflow (`.github/workflows/pages.yml`) that publishes the repository root to GitHub Pages on every push to `main`. In the repository settings choose **Pages → Build and deployment → Source: GitHub Actions**. Alternatively pick **Deploy from a branch** with the root folder, since the site is plain static files.
+The repository ships a GitHub Actions workflow (`.github/workflows/pages.yml`) that publishes the repository root to GitHub Pages on every push to `main` (and, until the code is merged, to `claude/umamusume-deck-generator-v6mutn`).
+
+One-time setup, which the workflow cannot do on its own: open **Settings → Pages → Build and deployment** and set **Source** to **GitHub Actions**. Then re-run the failed "Deploy to GitHub Pages" run from the Actions tab or push any commit. Alternatively pick **Deploy from a branch** with the root folder, since the site is plain static files.
 
 ## Credits
 
