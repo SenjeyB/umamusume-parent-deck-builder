@@ -23,6 +23,8 @@ Everything runs in the browser. Inputs are stored in `localStorage`, and the **C
 
 - **Hints** of a support card and **innate / awakening skills** of an uma are always available.
 - **Career events** of a card or an uma can also give skills (this is how gold skills such as Swinging Maestro from SSR Super Creek appear). Events with several options are exclusive: only one option of an event is counted, and the tool tells you which option it assumed.
+- **Grandparents**: you can name up to two umas that will be the parents of the parent you are building. Their white skills and unique skills count as inheritable through that parent, which is the only way to pass down a skill owned by the trainee's own character in another outfit (for example Triumphant Pulse of Oguri Cap [Starlight Beat] to Oguri Cap [Ashen Miracle]).
+- White versions of gold skills are resolved from the skill families in the data (including reversed numbering such as Uma Stan / Superstan and ○ → ◎ → gold chains). A gold skill without any white version in the data is reported as such.
 - A parent **cannot pass down a gold skill**, only its white version. A wanted gold skill is therefore kept only when the trainee herself or a card in her deck can give it; otherwise the tool warns and searches for the white version instead (for example Swinging Maestro becomes Corner Recovery ○). Gold skills of a parent are counted as their white versions.
 
 ## Data

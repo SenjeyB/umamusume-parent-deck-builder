@@ -49,6 +49,7 @@
       notOwned: [],
       notOwnedCharas: [],
       firstParentId: 0,
+      grandparents: [],
       viewParentId: 0,
     };
   }
@@ -69,6 +70,7 @@
     out.notOwned = uniqueIds(src.notOwned, index.cardById);
     out.notOwnedCharas = uniqueIds(src.notOwnedCharas, index.charaById);
     out.firstParentId = index.charaById.has(Number(src.firstParentId)) ? Number(src.firstParentId) : 0;
+    out.grandparents = uniqueIds(src.grandparents, index.charaById).slice(0, 2);
     out.typeMin = defaultTypeMin();
     if (src.typeMin && typeof src.typeMin === "object") {
       let total = 0;
@@ -282,6 +284,18 @@
   }
 
   const targetCharaId = () => (index.charaById.get(state.targetId) || {}).charaId || 0;
+  const grandCharaIds = () => state.grandparents.map((id) => index.charaById.get(id).charaId);
+
+  const grandItems = () =>
+    data.charas
+      .filter((c) => !grandCharaIds().includes(c.charaId))
+      .map((c) => ({
+        id: c.id,
+        label: c.name,
+        sub: c.title,
+        img: charaImg(c.id),
+        search: `${c.name} ${c.title}`.toLowerCase(),
+      }));
 
   const charaItems = (forParent) =>
     data.charas
@@ -373,6 +387,38 @@
         state.parentId = item.id;
       }),
     });
+    pickers.grand = createPicker({
+      mount: $("grandparent-picker"),
+      placeholderKey: "grand.pick",
+      getItems: grandItems,
+      onSelect: (item) => addGrandparent(item.id),
+    });
+  }
+
+  function addGrandparent(charaCardId) {
+    const chara = index.charaById.get(charaCardId);
+    if (!chara || state.grandparents.length >= 2 || grandCharaIds().includes(chara.charaId)) return;
+    update(() => {
+      state.grandparents.push(charaCardId);
+    });
+  }
+
+  function renderGrandparents() {
+    $("grandparents").replaceChildren(
+      ...state.grandparents.map((id) => {
+        const chara = index.charaById.get(id);
+        return h(
+          "span",
+          { class: "chip" },
+          h("img", { class: "chibi", src: charaImg(chara.id), alt: "" }),
+          h("span", { class: "chip-text" }, chara.name, h("span", { class: "chip-sub" }, chara.title)),
+          h("button", { type: "button", class: "icon-btn danger", title: t("action.reset"), onclick: () => update(() => {
+            state.grandparents = state.grandparents.filter((x) => x !== id);
+          }) }, "✕")
+        );
+      })
+    );
+    $("grandparent-picker").hidden = state.grandparents.length >= 2;
   }
 
   function normalizeState() {
@@ -383,6 +429,8 @@
     if (parent && parent.charaId === charaId) state.parentId = 0;
     const first = index.charaById.get(state.firstParentId);
     if (first && first.charaId === charaId) state.firstParentId = 0;
+    const parentChara = index.charaById.get(state.parentId);
+    if (parentChara && grandCharaIds().includes(parentChara.charaId)) state.parentId = 0;
   }
 
   function firstParentCharaIds() {
@@ -402,7 +450,7 @@
   function renderSelectedChara(mount, charaId, emptyLabel, onClear) {
     const chara = index.charaById.get(charaId);
     if (!chara) {
-      mount.replaceChildren(emptyLabel ? h("span", { class: "badge" }, emptyLabel) : null);
+      mount.replaceChildren(...(emptyLabel ? [h("span", { class: "badge" }, emptyLabel)] : []));
       return;
     }
     mount.replaceChildren(
@@ -606,6 +654,7 @@
     renderWanted();
     renderWeightMode();
     renderParent();
+    renderGrandparents();
     renderTypeMins();
     for (const picker of Object.values(pickers)) picker.refresh();
   }
@@ -625,6 +674,7 @@
       notOwned: new Set(state.notOwned),
       notOwnedCharas: new Set(state.notOwnedCharas),
       excludeCharaIds: firstParentCharaIds(),
+      grandparents: state.grandparents,
       maxDecks: 8,
       maxParents: 8,
     });
@@ -746,12 +796,13 @@
             h("div", { class: "name" }, chara.name),
             h("div", { class: "title" }, chara.title),
             h("div", { class: "stats" }, h("span", { class: "badge" }, t("parent.covers", { a: p.coveredCount, b: result.effective.length })), h("span", { class: "badge" }, t("parent.cards", { n: p.cardCount }))),
-            p.innate.length || p.viaEvents.length
+            p.innate.length || p.viaEvents.length || p.viaGrand.length
               ? h(
                   "div",
                   { class: "innate", title: choiceTitle || t("parent.innate") },
                   p.innate.map((id) => skillIcon(id, t("deck.fromParent"))),
-                  p.viaEvents.map((id) => skillIcon(id, t("deck.fromParentEvent"), "via-event"))
+                  p.viaEvents.map((id) => skillIcon(id, t("deck.fromParentEvent"), "via-event")),
+                  p.viaGrand.map((id) => skillIcon(id, t("deck.fromGrandShort"), "via-grand"))
                 )
               : null
           )
@@ -776,10 +827,17 @@
   function renderSlot(slot) {
     if (slot.kind === "card") {
       const card = index.cardById.get(slot.id);
-      const altList = h("div", { class: "slot-alt-list", hidden: true }, slot.alts.map((id) => {
-        const alt = index.cardById.get(id);
-        return h("div", { class: "slot-alt" }, h("span", { class: `badge badge-rarity rar-${alt.rar}` }, t(`rarity.${alt.rar}`)), cardLabel(alt));
-      }));
+      const altList = h(
+        "div",
+        { class: "slot-alt-list", hidden: true, onclick: (e) => {
+          e.currentTarget.hidden = true;
+        } },
+        h("div", { class: "slot-alt-head" }, t("deck.alts", { n: slot.alts.length }), h("span", { class: "slot-alt-close" }, "✕")),
+        slot.alts.map((id) => {
+          const alt = index.cardById.get(id);
+          return h("div", { class: "slot-alt" }, h("span", { class: `badge badge-rarity rar-${alt.rar}` }, t(`rarity.${alt.rar}`)), cardLabel(alt));
+        })
+      );
       return h(
         "div",
         { class: `slot slot-card type-${card.type}` + (slot.borrowed ? " borrow" : "") },
@@ -812,6 +870,7 @@
       const skill = index.skillById.get(c.id);
       let note;
       if (c.from === "parent") note = c.viaEvent ? t("deck.fromParentEvent") : t("deck.fromParent");
+      else if (c.from === "grandparent") note = t("deck.fromGrand", { name: c.grandparent ? charaLabel(index.charaById.get(c.grandparent)) : "" });
       else note = c.cards.map((id) => index.cardById.get(id).chara).join(", ") + (c.viaEvent ? ` (${t("deck.viaEvent")})` : "");
       return h("div", { class: "skill-row" }, skillIcon(c.id), skillNameNode(skill), h("span", { class: "note" }, note));
     });
@@ -846,7 +905,7 @@
   }
 
   function planSecondParent(result, current) {
-    const leftovers = current.decks[0].missing.filter((m) => m.reason !== "none").map((m) => originalWantedId(result, m.id));
+    const leftovers = current.decks[0].missing.filter((m) => m.reason === "limit" || m.reason === "nocard").map((m) => originalWantedId(result, m.id));
     if (!leftovers.length) return;
     update(() => {
       state.firstParentId = current.charaId;
@@ -861,12 +920,28 @@
     const chara = index.charaById.get(current.charaId);
     const leftovers = current.decks[0].missing.filter((m) => m.reason !== "none");
     if (!leftovers.length) return null;
+    const grandRows = leftovers
+      .filter((m) => m.reason === "grandparent" && (m.via || []).length)
+      .map((m) => {
+        const skill = index.skillById.get(m.id);
+        const via = m.via.slice(0, 4).map((id) => index.charaById.get(id)).filter(Boolean);
+        return h(
+          "div",
+          { class: "grand-row" },
+          skillIcon(m.id),
+          skillNameNode(skill),
+          h("span", { class: "note" }, t("results.viaGrand", { names: via.map(charaLabel).join(", ") })),
+          via.filter((c) => state.grandparents.length < 2 && !grandCharaIds().includes(c.charaId)).map((c) => h("button", { type: "button", class: "btn btn-ghost btn-small", onclick: () => addGrandparent(c.id) }, t("results.addGrand", { name: c.name })))
+        );
+      });
+    const rest = leftovers.filter((m) => m.reason !== "grandparent");
     return h(
       "div",
       { class: "notice warn" },
       h("div", { class: "notice-title" }, t("results.leftover", { name: chara.name })),
-      h("div", { class: "chip-list" }, leftovers.map((m) => skillChip(originalWantedId(result, m.id), t(`deck.missing.${m.reason}`), "muted"))),
-      h("div", { class: "notice-actions" }, h("button", { type: "button", class: "btn btn-small", onclick: () => planSecondParent(result, current) }, t("results.planSecond")))
+      rest.length ? h("div", { class: "chip-list" }, rest.map((m) => skillChip(originalWantedId(result, m.id), t(`deck.missing.${m.reason}`), "muted"))) : null,
+      grandRows.length ? h("div", { class: "grand-rows" }, grandRows) : null,
+      rest.length ? h("div", { class: "notice-actions" }, h("button", { type: "button", class: "btn btn-small", onclick: () => planSecondParent(result, current) }, t("results.planSecond"))) : null
     );
   }
 
@@ -875,7 +950,7 @@
     const title = $("decks-title");
     if (!current || !state.wanted.length || !result.effective.length) {
       title.textContent = t("results.decks", { name: "—" });
-      mount.replaceChildren(state.wanted.length && !result.effective.length ? h("div", { class: "notice info" }, t("results.excluded")) : null);
+      mount.replaceChildren(...(state.wanted.length && !result.effective.length ? [h("div", { class: "notice info" }, t("results.excluded"))] : []));
       return;
     }
     const chara = index.charaById.get(current.charaId);
@@ -1019,6 +1094,10 @@
       btn.addEventListener("click", () => setLanguage(btn.dataset.lang));
     }
     $("footer-generated").textContent = t("footer.generated", { date: data.generated });
+    document.addEventListener("click", (e) => {
+      if (e.target.closest(".slot-alts") || e.target.closest(".slot-alt-list")) return;
+      for (const el of document.querySelectorAll(".slot-alt-list:not([hidden])")) el.hidden = true;
+    });
     renderInputs();
     compute();
   }

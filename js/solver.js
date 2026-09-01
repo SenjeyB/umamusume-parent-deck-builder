@@ -117,11 +117,7 @@
     const cardById = new Map(data.cards.map((c) => [c.id, c]));
     const charaById = new Map(data.charas.map((c) => [c.id, c]));
     const lower = new Map();
-    for (const s of data.skills) {
-      const last = s.id % 10;
-      if (last === 1 && skillById.has(s.id + 1)) lower.set(s.id, s.id + 1);
-      else if (last === 4 && s.rar === 2 && skillById.has(s.id - 3)) lower.set(s.id, s.id - 3);
-    }
+    for (const s of data.skills) if (s.low && skillById.has(s.low)) lower.set(s.id, s.low);
     const upper = new Map();
     for (const [u, l] of lower) upper.set(l, u);
     const index = { data, skillById, cardById, charaById, lower, upper };
@@ -508,11 +504,15 @@
     const missing = [];
     for (let i = 0; i < ctx.effective.length; i++) {
       const id = ctx.effective[i];
-      if (Mask.has(ctx.parentMask, i)) covered.push({ id, from: "parent", viaEvent: Mask.has(ctx.parentEventMask, i) });
+      if (Mask.has(ctx.ownMask, i)) covered.push({ id, from: "parent", viaEvent: Mask.has(ctx.parentEventMask, i) });
+      else if (Mask.has(ctx.parentMask, i)) covered.push({ id, from: "grandparent", grandparent: ctx.grandBy.get(i) });
       else if (Mask.has(state.covered, i)) {
         const providers = cards.filter((c) => Mask.has(c.mask, i));
         covered.push({ id, from: "card", cards: providers.map((c) => c.id), viaEvent: providers.every((c) => !Mask.has(c.hintMask, i)) });
-      } else missing.push({ id, reason: ctx.cardSources.has(id) ? "limit" : ctx.charaSources.has(id) ? "nocard" : "none" });
+      } else if (ctx.cardSources.has(id)) missing.push({ id, reason: "limit" });
+      else if (ctx.parentSources.has(id)) missing.push({ id, reason: "nocard" });
+      else if (ctx.charaSources.has(id)) missing.push({ id, reason: "grandparent", via: ctx.grandSources(id) });
+      else missing.push({ id, reason: "none" });
     }
     return {
       slots,
@@ -534,6 +534,8 @@
     const notOwned = opts.notOwned instanceof Set ? opts.notOwned : new Set(opts.notOwned || []);
     const notOwnedCharas = opts.notOwnedCharas instanceof Set ? opts.notOwnedCharas : new Set(opts.notOwnedCharas || []);
     const excludeCharaIds = new Set(opts.excludeCharaIds || []);
+    const grandparents = (opts.grandparents || []).map((id) => index.charaById.get(Number(id))).filter(Boolean);
+    const grandCharaIds = new Set(grandparents.map((g) => g.charaId));
     const constraints = makeConstraints(opts.typeMin || {});
     const maxDecks = opts.maxDecks || 10;
     const maxParents = opts.maxParents || 8;
@@ -620,20 +622,36 @@
     const charaSourceSet = new Set(effective.filter((id) => index.skillCharas.has(id) || index.skillCharaEvents.has(id)));
     const unobtainable = effective.filter((id) => !cardSourceSet.has(id) && !charaSourceSet.has(id));
 
+    let grandMask = Mask.empty(words);
+    const grandBy = new Map();
+    for (const grand of grandparents) {
+      const sources = charaSources(index, grand, 5, "grand");
+      const freeMask = setMask(whiteOnly(index, sources.free), position, words);
+      const picks = resolveGroups(sources.groups, position, weights, Mask.or(freeMask, grandMask), (set) => whiteOnly(index, set));
+      const mask = Mask.or(freeMask, picks.mask);
+      for (const i of Mask.indexes(Mask.andNot(mask, grandMask))) grandBy.set(i, grand.id);
+      grandMask = Mask.or(grandMask, mask);
+    }
+
     const targetCharaId = targetChara ? targetChara.charaId : 0;
+    const isEligible = (chara) => chara.charaId !== targetCharaId && !excludeCharaIds.has(chara.charaId) && !grandCharaIds.has(chara.charaId);
     const manualChara = parentOpts.charaId ? index.charaById.get(parentOpts.charaId) : null;
-    const manualId = manualChara && manualChara.charaId !== targetCharaId && !excludeCharaIds.has(manualChara.charaId) ? manualChara.id : 0;
-    const eligible = index.data.charas.filter((chara) => chara.charaId !== targetCharaId && !excludeCharaIds.has(chara.charaId) && (!notOwnedCharas.has(chara.id) || chara.id === manualId));
+    const manualId = manualChara && isEligible(manualChara) ? manualChara.id : 0;
+    const eligible = index.data.charas.filter((chara) => isEligible(chara) && (!notOwnedCharas.has(chara.id) || chara.id === manualId));
+    const eligibleIds = new Set(index.data.charas.filter(isEligible).map((chara) => chara.id));
+    const parentSourceSet = new Set(effective.filter((id) => [...(index.skillCharas.get(id) || []), ...(index.skillCharaEvents.get(id) || [])].some((cid) => eligibleIds.has(cid))));
+    const grandSources = (id) => [...new Set([...(index.skillCharas.get(id) || []), ...(index.skillCharaEvents.get(id) || [])])];
     const parents = eligible.map((chara) => {
       const sources = charaSources(index, chara, parentAwakening, "parent");
       const freeMask = setMask(whiteOnly(index, sources.free), position, words);
-      const picks = resolveGroups(sources.groups, position, weights, freeMask, (set) => whiteOnly(index, set));
-      const parentMask = Mask.or(freeMask, picks.mask);
+      const picks = resolveGroups(sources.groups, position, weights, Mask.or(freeMask, grandMask), (set) => whiteOnly(index, set));
+      const ownMask = Mask.or(freeMask, picks.mask);
+      const parentMask = Mask.or(ownMask, grandMask);
       const parentScore = Mask.weight(parentMask, weights);
       const remainingMask = Mask.andNot(fullMask, parentMask);
       const cands = buildCandidates(index, position, weights, remainingMask, notOwned, chara.charaId);
       const seed = greedy(cands, weights, constraints, words);
-      return { chara, parentMask, parentEventMask: picks.mask, parentPicks: picks.picks, parentScore, cands, estimate: parentScore + seed.score, estimateCards: seed.count, exact: null };
+      return { chara, parentMask, ownMask, parentEventMask: picks.mask, parentPicks: picks.picks, parentScore, cands, estimate: parentScore + seed.score, estimateCards: seed.count, exact: null };
     });
 
     parents.sort((a, b) => b.estimate - a.estimate || a.estimateCards - b.estimateCards || Mask.popcount(b.parentMask) - Mask.popcount(a.parentMask) || a.chara.id - b.chara.id);
@@ -641,7 +659,7 @@
     const manual = manualId ? parents.find((p) => p.chara.id === manualId) : null;
     if (manual && !detailed.includes(manual)) detailed.push(manual);
     for (const p of detailed) {
-      const ctx = { effective, constraints, parentMask: p.parentMask, parentEventMask: p.parentEventMask, parentScore: p.parentScore, cardSources: cardSourceSet, charaSources: charaSourceSet };
+      const ctx = { effective, constraints, parentMask: p.parentMask, ownMask: p.ownMask, parentEventMask: p.parentEventMask, grandBy, parentScore: p.parentScore, cardSources: cardSourceSet, charaSources: charaSourceSet, parentSources: parentSourceSet, grandSources };
       const search = searchDecks(p.cands, weights, constraints, maxDecks * 3, opts.nodeBudget || 150000, words);
       const decks = frontier(search.decks.map((s) => describeDeck(s, ctx))).slice(0, maxDecks);
       if (!decks.length) decks.push(describeDeck(emptyState(words), ctx));
@@ -653,8 +671,9 @@
     const parentSummaries = detailed.map((p) => ({
       charaId: p.chara.id,
       total: p.total,
-      innate: Mask.indexes(Mask.andNot(p.parentMask, p.parentEventMask)).map((i) => effective[i]),
+      innate: Mask.indexes(Mask.andNot(p.ownMask, p.parentEventMask)).map((i) => effective[i]),
       viaEvents: Mask.indexes(p.parentEventMask).map((i) => effective[i]),
+      viaGrand: Mask.indexes(Mask.andNot(p.parentMask, p.ownMask)).map((i) => effective[i]),
       choices: p.parentPicks.map((pick) => ({ name: pick.name, option: pick.option, optionIndex: pick.optionIndex, skills: pick.ids.map((i) => effective[i]) })),
       coveredCount: p.exact.decks[0].coveredCount,
       cardCount: p.exact.decks[0].cardCount,
@@ -676,6 +695,7 @@
       selectedParent: manual ? manual.chara.id : parentSummaries.length ? parentSummaries[0].charaId : null,
       manualIgnored: Boolean(parentOpts.charaId && !manualId),
       targetCharaId,
+      grandparents: grandparents.map((g) => g.id),
       maxScore: Mask.weight(fullMask, weights),
     };
   }

@@ -118,9 +118,52 @@ function cleanDescription(text) {
   return String(text || "").replace(/\\n|\n/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function expectedUniqueId(cardId, charaId) {
+  const outfit = cardId % 100;
+  return Number(`1${outfit - 1}${String(charaId % 1000).padStart(3, "0")}1`);
+}
+
+function pickUnique(cardId, charaId, skillIds) {
+  const uniques = skillIds.filter((id) => id >= 100000 && id < 200000);
+  const expected = expectedUniqueId(cardId, charaId);
+  if (uniques.includes(expected)) return expected;
+  return uniques.length ? Math.max(...uniques) : 0;
+}
+
+function computeLowerLinks(skills) {
+  const isCross = (s) => /×/.test(s.skillName);
+  const isDouble = (s) => /◎/.test(s.skillName);
+  const cond = (s) => `${s.activationCondition}|${s.precondition}`;
+  const families = new Map();
+  for (const s of skills) {
+    const family = Math.floor(s.skillId / 10);
+    if (!families.has(family)) families.set(family, []);
+    families.get(family).push(s);
+  }
+  const lower = new Map();
+  for (const s of skills) {
+    if (isCross(s)) continue;
+    const family = (families.get(Math.floor(s.skillId / 10)) || []).filter((o) => o.skillId !== s.skillId && !isCross(o) && o.rarity === 1);
+    let target = null;
+    if (s.rarity >= 2) {
+      target = family.find(isDouble) || (family.length === 1 ? family[0] : family.find((o) => cond(o) === cond(s)) || family[0] || null);
+      if (!target) {
+        const global = skills.filter((o) => o.skillId !== s.skillId && o.rarity === 1 && !isCross(o) && cond(o) === cond(s) && o.skillCategory === s.skillCategory);
+        target = global.find(isDouble) || (global.length === 1 ? global[0] : null);
+      }
+    } else if (isDouble(s)) {
+      target = family.find((o) => !isDouble(o)) || null;
+    }
+    if (target) lower.set(s.skillId, target.skillId);
+  }
+  return lower;
+}
+
 function buildDataset({ cards, charas, skills, overrides }) {
   const groupNames = new Map((overrides.supportCards || []).map((o) => [o.supportCardId, o.charaName]));
+  const skillOverrides = new Map((overrides.characters || []).map((o) => [o.cardId, o.skillIds]));
   const skillById = new Map(skills.map((s) => [s.skillId, s]));
+  const lowerLinks = computeLowerLinks(skills.filter((s) => s.skillId >= 200000 && s.skillId < 900000));
 
   const outCards = cards
     .map((c) => ({
@@ -138,7 +181,8 @@ function buildDataset({ cards, charas, skills, overrides }) {
 
   const outCharas = charas
     .map((c) => {
-      const unique = c.skillIds.split(",").map(Number).find((id) => id >= 100000 && id < 200000) || 0;
+      const skillIds = String(skillOverrides.get(c.cardId) || c.skillIds).split(",").map(Number);
+      const unique = pickUnique(c.cardId, c.charaId, skillIds);
       return {
         id: c.cardId,
         charaId: c.charaId,
@@ -166,6 +210,7 @@ function buildDataset({ cards, charas, skills, overrides }) {
       rar: s.rarity,
       icon: s.iconId,
       sp: s.needSkillPoint || 0,
+      low: lowerLinks.get(s.skillId) || 0,
       desc: cleanDescription(s.skillDesc),
     }))
     .sort((a, b) => a.id - b.id);

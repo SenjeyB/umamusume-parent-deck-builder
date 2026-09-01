@@ -234,6 +234,51 @@ img.via-event {
   border-radius: 6px;
 }
 
+img.via-grand {
+  outline: 2px dashed var(--group);
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+
+.grand-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.grand-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+}
+
+.grand-row img {
+  width: 22px;
+  height: 22px;
+}
+
+.grand-row .note {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.slot-alt-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  margin-bottom: 2px;
+}
+
+.slot-alt-close {
+  color: var(--text);
+  font-weight: 700;
+}
+
 .slot-choices {
   display: flex;
   flex-direction: column;
@@ -957,6 +1002,7 @@ input:focus {
   left: 4px;
   right: 4px;
   bottom: 4px;
+  cursor: pointer;
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   border-radius: 8px;
