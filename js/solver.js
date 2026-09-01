@@ -112,6 +112,10 @@
     return Boolean(skill) && skill.rar >= 2 && skill.id < 900000;
   }
 
+  function isInheritableSkill(skill) {
+    return Boolean(skill) && (Boolean(skill.inh) || skill.id >= 900000);
+  }
+
   function createIndex(data) {
     const skillById = new Map(data.skills.map((s) => [s.id, s]));
     const cardById = new Map(data.cards.map((c) => [c.id, c]));
@@ -120,7 +124,8 @@
     for (const s of data.skills) if (s.low && skillById.has(s.low)) lower.set(s.id, s.low);
     const upper = new Map();
     for (const [u, l] of lower) upper.set(l, u);
-    const index = { data, skillById, cardById, charaById, lower, upper };
+    const scenarios = (data.scenarios || []).filter((sc) => sc.grants.length || sc.teammates.length);
+    const index = { data, skillById, cardById, charaById, lower, upper, scenarios };
 
     const push = (map, id, owner) => {
       if (!map.has(id)) map.set(id, []);
@@ -140,8 +145,26 @@
       for (const id of innate) push(index.skillCharas, id, chara.id);
       for (const id of expandDown(index, eventSkillIds(chara))) if (!innate.has(id)) push(index.skillCharaEvents, id, chara.id);
     }
+    index.skillScenarios = new Map();
+    for (const sc of scenarios) {
+      for (const grant of sc.grants) {
+        const ids = grant.skills.slice();
+        for (const option of grant.options || []) ids.push(...option.skills, ...(option.fallback || []));
+        for (const id of expandDown(index, ids)) push(index.skillScenarios, id, sc.id);
+      }
+      for (const charaId of sc.teammates) {
+        const pool = teammatePool(index, charaId);
+        for (const id of expandDown(index, pool)) push(index.skillScenarios, id, sc.id);
+      }
+    }
     index.isGold = (id) => isGoldSkill(skillById.get(id));
+    index.isInheritable = (id) => isInheritableSkill(skillById.get(id));
     return index;
+  }
+
+  function teammatePool(index, charaId) {
+    const cards = index.data.cards.filter((c) => c.charaId === charaId && c.hints.length).sort((a, b) => a.rar - b.rar);
+    return cards.length ? cards[0].hints : [];
   }
 
   function eventSkillIds(owner) {
@@ -160,6 +183,15 @@
       }
     }
     return out;
+  }
+
+  function inheritableFallback(index, id) {
+    let cur = index.lower.get(id);
+    while (cur !== undefined) {
+      if (index.isInheritable(cur)) return cur;
+      cur = index.lower.get(cur);
+    }
+    return 0;
   }
 
   function charaSkillIds(chara, awakening) {
@@ -188,9 +220,41 @@
     return { free: expandDown(index, card.hints.concat(events.free)), groups: events.groups };
   }
 
-  function whiteOnly(index, set) {
+  function scenarioSources(index, scenario, ownerCharaId, deckCardIds) {
+    const deckCharas = new Set((deckCardIds || []).map((id) => (index.cardById.get(id) || {}).charaId).filter(Boolean));
+    const free = [];
+    const origin = new Map();
+    const groups = [];
+    const note = (ids, how, extra) => {
+      for (const id of expandDown(index, ids)) if (!origin.has(id)) origin.set(id, Object.assign({ how }, extra || {}));
+    };
+    for (const grant of scenario.grants) {
+      if (grant.skills.length) {
+        free.push(...grant.skills);
+        note(grant.skills, grant.how);
+      }
+      if (grant.options && grant.options.length) {
+        const options = grant.options.map((option) => {
+          const linked = !option.link || option.link === ownerCharaId || deckCharas.has(option.link);
+          const ids = linked || !option.fallback.length ? option.skills : option.fallback;
+          note(ids, grant.how, { link: option.link || 0 });
+          return { text: index.skillById.get(ids[0]) ? index.skillById.get(ids[0]).name : "", set: expandDown(index, ids), link: option.link || 0, linked };
+        });
+        groups.push({ owner: "scenario", name: `${scenario.name}: ${grant.how}`, how: grant.how, options });
+      }
+    }
+    for (const charaId of scenario.teammates) {
+      if (charaId === ownerCharaId || deckCharas.has(charaId)) continue;
+      const pool = teammatePool(index, charaId);
+      free.push(...pool);
+      note(pool, "teammate", { teammate: charaId });
+    }
+    return { free: expandDown(index, free), groups, origin };
+  }
+
+  function inheritableOnly(index, set) {
     const out = new Set();
-    for (const id of set) if (!index.isGold(id)) out.add(id);
+    for (const id of set) if (index.isInheritable(id)) out.add(id);
     return out;
   }
 
@@ -230,7 +294,7 @@
       });
       if (best) {
         mask = Mask.or(mask, best.mask);
-        picks.push({ owner: group.owner, name: group.name, option: group.options[best.optionIndex].text, optionIndex: best.optionIndex, ids: Mask.indexes(best.mask) });
+        picks.push({ owner: group.owner, name: group.name, how: group.how, option: group.options[best.optionIndex].text, optionIndex: best.optionIndex, ids: Mask.indexes(best.mask) });
       }
     }
     return { mask, picks };
@@ -239,12 +303,12 @@
   function cardVariants(index, card, position, weights, remainingMask, owned) {
     const words = remainingMask.length;
     const sources = cardSources(index, card, "card");
-    const baseMask = Mask.and(setMask(whiteOnly(index, sources.free), position, words), remainingMask);
+    const baseMask = Mask.and(setMask(inheritableOnly(index, sources.free), position, words), remainingMask);
     const groupMasks = sources.groups
       .map((group) => ({
         group,
         options: group.options
-          .map((option, i) => ({ i, text: option.text, mask: Mask.and(setMask(whiteOnly(index, option.set), position, words), remainingMask) }))
+          .map((option, i) => ({ i, text: option.text, mask: Mask.and(setMask(inheritableOnly(index, option.set), position, words), remainingMask) }))
           .filter((o) => !Mask.isZero(o.mask)),
       }))
       .filter((g) => g.options.length);
@@ -505,12 +569,14 @@
     for (let i = 0; i < ctx.effective.length; i++) {
       const id = ctx.effective[i];
       if (Mask.has(ctx.ownMask, i)) covered.push({ id, from: "parent", viaEvent: Mask.has(ctx.parentEventMask, i) });
+      else if (Mask.has(ctx.scenarioMask, i)) covered.push({ id, from: "scenario", scenario: ctx.scenario ? ctx.scenario.id : "", origin: ctx.scenarioOrigin.get(id) || null });
       else if (Mask.has(ctx.parentMask, i)) covered.push({ id, from: "grandparent", grandparent: ctx.grandBy.get(i) });
       else if (Mask.has(state.covered, i)) {
         const providers = cards.filter((c) => Mask.has(c.mask, i));
         covered.push({ id, from: "card", cards: providers.map((c) => c.id), viaEvent: providers.every((c) => !Mask.has(c.hintMask, i)) });
       } else if (ctx.cardSources.has(id)) missing.push({ id, reason: "limit" });
       else if (ctx.parentSources.has(id)) missing.push({ id, reason: "nocard" });
+      else if (ctx.scenarioSources.has(id)) missing.push({ id, reason: "scenario", via: ctx.scenarioSources.get(id) });
       else if (ctx.charaSources.has(id)) missing.push({ id, reason: "grandparent", via: ctx.grandSources(id) });
       else missing.push({ id, reason: "none" });
     }
@@ -542,6 +608,9 @@
     const target = opts.target || {};
     const parentOpts = opts.parent || {};
     const parentAwakening = parentOpts.awakening || 5;
+    const traineeScenario = index.scenarios.find((sc) => sc.id === target.scenario) || null;
+    const parentScenarioChoice = parentOpts.scenario || "auto";
+    const parentScenarioPool = parentScenarioChoice === "auto" ? index.scenarios : index.scenarios.filter((sc) => sc.id === parentScenarioChoice);
 
     const wanted = [];
     for (const raw of opts.wanted || []) {
@@ -553,6 +622,7 @@
     const traineeReason = new Map();
     const traineeGroups = [];
     const targetChara = target.charaId ? index.charaById.get(target.charaId) : null;
+    const targetCharaId = targetChara ? targetChara.charaId : 0;
     if (targetChara) {
       const innate = expandDown(index, charaSkillIds(targetChara, target.awakening || 5));
       for (const id of innate) traineeReason.set(id, { reason: "target" });
@@ -568,6 +638,11 @@
       for (const id of expandDown(index, events.free)) if (!traineeReason.has(id)) traineeReason.set(id, { reason: "deckEvent", card: card.id });
       for (const group of events.groups) traineeGroups.push(Object.assign({ card: card.id }, group));
     }
+    if (traineeScenario) {
+      const sources = scenarioSources(index, traineeScenario, targetCharaId, target.deck || []);
+      for (const id of sources.free) if (!traineeReason.has(id)) traineeReason.set(id, Object.assign({ reason: "scenario", scenario: traineeScenario.id }, sources.origin.get(id) || {}));
+      for (const group of sources.groups) traineeGroups.push(Object.assign({ scenario: traineeScenario.id, origin: sources.origin }, group));
+    }
 
     const preliminary = wanted.filter((id) => !traineeReason.has(id));
     const prePosition = new Map(preliminary.map((id, i) => [id, i]));
@@ -578,8 +653,9 @@
       const group = traineeGroups.find((g) => g.name === pick.name && g.owner === pick.owner);
       const card = group ? group.card : undefined;
       const skills = pick.ids.map((i) => preliminary[i]);
-      for (const id of skills) traineeReason.set(id, { reason: pick.owner === "deck" ? "deckChoice" : "targetChoice", card, event: pick.name, option: pick.option, optionIndex: pick.optionIndex });
-      traineeChoices.push({ owner: pick.owner, card, name: pick.name, option: pick.option, optionIndex: pick.optionIndex, skills });
+      const reason = pick.owner === "deck" ? "deckChoice" : pick.owner === "scenario" ? "scenarioChoice" : "targetChoice";
+      for (const id of skills) traineeReason.set(id, Object.assign({ reason, card, event: pick.name, option: pick.option, optionIndex: pick.optionIndex, scenario: group ? group.scenario : undefined }, group && group.origin ? group.origin.get(id) || {} : {}));
+      traineeChoices.push({ owner: pick.owner, card, scenario: group ? group.scenario : undefined, name: pick.name, how: pick.how, option: pick.option, optionIndex: pick.optionIndex, skills });
     }
 
     const excluded = [];
@@ -592,17 +668,17 @@
       }
       let effectiveId = id;
       let fallbackOf = null;
-      if (isGoldSkill(skill)) {
-        const white = index.lower.get(id);
-        if (!white) {
-          excluded.push({ id, reason: "goldNoWhite" });
+      if (!isInheritableSkill(skill)) {
+        const lowerId = inheritableFallback(index, id);
+        if (!lowerId) {
+          excluded.push({ id, reason: "notInheritable" });
           continue;
         }
-        if (traineeReason.has(white)) {
-          excluded.push(Object.assign({ id, white }, traineeReason.get(white), { reason: "goldWhiteCovered", whiteReason: traineeReason.get(white).reason }));
+        if (traineeReason.has(lowerId)) {
+          excluded.push(Object.assign({ id, white: lowerId }, traineeReason.get(lowerId), { reason: "fallbackCovered", whiteReason: traineeReason.get(lowerId).reason }));
           continue;
         }
-        effectiveId = white;
+        effectiveId = lowerId;
         fallbackOf = id;
       }
       const duplicate = effectiveInfo.find((e) => e.id === effectiveId);
@@ -620,20 +696,20 @@
     const fullMask = Mask.full(effective.length);
     const cardSourceSet = new Set(effective.filter((id) => index.skillCards.has(id) || index.skillCardEvents.has(id)));
     const charaSourceSet = new Set(effective.filter((id) => index.skillCharas.has(id) || index.skillCharaEvents.has(id)));
-    const unobtainable = effective.filter((id) => !cardSourceSet.has(id) && !charaSourceSet.has(id));
+    const scenarioSourceMap = new Map(effective.filter((id) => index.skillScenarios.has(id)).map((id) => [id, index.skillScenarios.get(id)]));
+    const unobtainable = effective.filter((id) => !cardSourceSet.has(id) && !charaSourceSet.has(id) && !scenarioSourceMap.has(id));
 
     let grandMask = Mask.empty(words);
     const grandBy = new Map();
     for (const grand of grandparents) {
       const sources = charaSources(index, grand, 5, "grand");
-      const freeMask = setMask(whiteOnly(index, sources.free), position, words);
-      const picks = resolveGroups(sources.groups, position, weights, Mask.or(freeMask, grandMask), (set) => whiteOnly(index, set));
+      const freeMask = setMask(inheritableOnly(index, sources.free), position, words);
+      const picks = resolveGroups(sources.groups, position, weights, Mask.or(freeMask, grandMask), (set) => inheritableOnly(index, set));
       const mask = Mask.or(freeMask, picks.mask);
       for (const i of Mask.indexes(Mask.andNot(mask, grandMask))) grandBy.set(i, grand.id);
       grandMask = Mask.or(grandMask, mask);
     }
 
-    const targetCharaId = targetChara ? targetChara.charaId : 0;
     const isEligible = (chara) => chara.charaId !== targetCharaId && !excludeCharaIds.has(chara.charaId) && !grandCharaIds.has(chara.charaId);
     const manualChara = parentOpts.charaId ? index.charaById.get(parentOpts.charaId) : null;
     const manualId = manualChara && isEligible(manualChara) ? manualChara.id : 0;
@@ -641,17 +717,38 @@
     const eligibleIds = new Set(index.data.charas.filter(isEligible).map((chara) => chara.id));
     const parentSourceSet = new Set(effective.filter((id) => [...(index.skillCharas.get(id) || []), ...(index.skillCharaEvents.get(id) || [])].some((cid) => eligibleIds.has(cid))));
     const grandSources = (id) => [...new Set([...(index.skillCharas.get(id) || []), ...(index.skillCharaEvents.get(id) || [])])];
+
     const parents = eligible.map((chara) => {
       const sources = charaSources(index, chara, parentAwakening, "parent");
-      const freeMask = setMask(whiteOnly(index, sources.free), position, words);
-      const picks = resolveGroups(sources.groups, position, weights, Mask.or(freeMask, grandMask), (set) => whiteOnly(index, set));
+      const freeMask = setMask(inheritableOnly(index, sources.free), position, words);
+      const picks = resolveGroups(sources.groups, position, weights, Mask.or(freeMask, grandMask), (set) => inheritableOnly(index, set));
       const ownMask = Mask.or(freeMask, picks.mask);
-      const parentMask = Mask.or(ownMask, grandMask);
+      const baseMask = Mask.or(ownMask, grandMask);
+      let scenario = null;
+      let scenarioMask = Mask.empty(words);
+      let scenarioPicks = [];
+      let scenarioOrigin = new Map();
+      let bestGain = 0;
+      for (const sc of parentScenarioPool) {
+        const scSources = scenarioSources(index, sc, chara.charaId, []);
+        const scFree = setMask(inheritableOnly(index, scSources.free), position, words);
+        const scPicks = resolveGroups(scSources.groups, position, weights, Mask.or(baseMask, scFree), (set) => inheritableOnly(index, set));
+        const mask = Mask.andNot(Mask.or(scFree, scPicks.mask), baseMask);
+        const gain = Mask.weight(mask, weights);
+        if (gain > bestGain || (!scenario && parentScenarioChoice !== "auto")) {
+          scenario = sc;
+          scenarioMask = mask;
+          scenarioPicks = scPicks.picks;
+          scenarioOrigin = scSources.origin;
+          bestGain = gain;
+        }
+      }
+      const parentMask = Mask.or(baseMask, scenarioMask);
       const parentScore = Mask.weight(parentMask, weights);
       const remainingMask = Mask.andNot(fullMask, parentMask);
       const cands = buildCandidates(index, position, weights, remainingMask, notOwned, chara.charaId);
       const seed = greedy(cands, weights, constraints, words);
-      return { chara, parentMask, ownMask, parentEventMask: picks.mask, parentPicks: picks.picks, parentScore, cands, estimate: parentScore + seed.score, estimateCards: seed.count, exact: null };
+      return { chara, parentMask, ownMask, scenario, scenarioMask, scenarioPicks, scenarioOrigin, parentEventMask: picks.mask, parentPicks: picks.picks, parentScore, cands, estimate: parentScore + seed.score, estimateCards: seed.count, exact: null };
     });
 
     parents.sort((a, b) => b.estimate - a.estimate || a.estimateCards - b.estimateCards || Mask.popcount(b.parentMask) - Mask.popcount(a.parentMask) || a.chara.id - b.chara.id);
@@ -659,7 +756,23 @@
     const manual = manualId ? parents.find((p) => p.chara.id === manualId) : null;
     if (manual && !detailed.includes(manual)) detailed.push(manual);
     for (const p of detailed) {
-      const ctx = { effective, constraints, parentMask: p.parentMask, ownMask: p.ownMask, parentEventMask: p.parentEventMask, grandBy, parentScore: p.parentScore, cardSources: cardSourceSet, charaSources: charaSourceSet, parentSources: parentSourceSet, grandSources };
+      const ctx = {
+        effective,
+        constraints,
+        parentMask: p.parentMask,
+        ownMask: p.ownMask,
+        scenarioMask: p.scenarioMask,
+        scenario: p.scenario,
+        scenarioOrigin: p.scenarioOrigin,
+        parentEventMask: p.parentEventMask,
+        grandBy,
+        parentScore: p.parentScore,
+        cardSources: cardSourceSet,
+        charaSources: charaSourceSet,
+        parentSources: parentSourceSet,
+        scenarioSources: scenarioSourceMap,
+        grandSources,
+      };
       const search = searchDecks(p.cands, weights, constraints, maxDecks * 3, opts.nodeBudget || 150000, words);
       const decks = frontier(search.decks.map((s) => describeDeck(s, ctx))).slice(0, maxDecks);
       if (!decks.length) decks.push(describeDeck(emptyState(words), ctx));
@@ -673,7 +786,9 @@
       total: p.total,
       innate: Mask.indexes(Mask.andNot(p.ownMask, p.parentEventMask)).map((i) => effective[i]),
       viaEvents: Mask.indexes(p.parentEventMask).map((i) => effective[i]),
-      viaGrand: Mask.indexes(Mask.andNot(p.parentMask, p.ownMask)).map((i) => effective[i]),
+      viaGrand: Mask.indexes(Mask.andNot(Mask.andNot(p.parentMask, p.ownMask), p.scenarioMask)).map((i) => effective[i]),
+      viaScenario: Mask.indexes(p.scenarioMask).map((i) => effective[i]),
+      scenario: p.scenario && !Mask.isZero(p.scenarioMask) ? { id: p.scenario.id, name: p.scenario.name, origins: Mask.indexes(p.scenarioMask).map((i) => ({ id: effective[i], origin: p.scenarioOrigin.get(effective[i]) || null })), choices: p.scenarioPicks.map((pick) => ({ name: pick.name, how: pick.how, option: pick.option, optionIndex: pick.optionIndex, skills: pick.ids.map((i) => effective[i]) })) } : null,
       choices: p.parentPicks.map((pick) => ({ name: pick.name, option: pick.option, optionIndex: pick.optionIndex, skills: pick.ids.map((i) => effective[i]) })),
       coveredCount: p.exact.decks[0].coveredCount,
       cardCount: p.exact.decks[0].cardCount,
@@ -689,7 +804,7 @@
       traineeChoices,
       weights,
       unobtainable,
-      sources: { cards: cardSourceSet, charas: charaSourceSet },
+      sources: { cards: cardSourceSet, charas: charaSourceSet, scenarios: scenarioSourceMap },
       constraints,
       parents: parentSummaries,
       selectedParent: manual ? manual.chara.id : parentSummaries.length ? parentSummaries[0].charaId : null,
@@ -700,5 +815,5 @@
     };
   }
 
-  root.UmaSolver = { TYPES, DECK_SIZE, MAX_WANTED, createIndex, expandDown, charaSkillIds, weightsFor, solve, isGoldSkill };
+  root.UmaSolver = { TYPES, DECK_SIZE, MAX_WANTED, createIndex, expandDown, charaSkillIds, weightsFor, solve, isGoldSkill, isInheritableSkill, inheritableFallback };
 })(typeof window !== "undefined" ? window : globalThis);

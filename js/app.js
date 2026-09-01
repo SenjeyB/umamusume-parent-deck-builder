@@ -50,6 +50,8 @@
       notOwnedCharas: [],
       firstParentId: 0,
       grandparents: [],
+      traineeScenario: "ura",
+      parentScenario: "auto",
       viewParentId: 0,
     };
   }
@@ -71,6 +73,9 @@
     out.notOwnedCharas = uniqueIds(src.notOwnedCharas, index.charaById);
     out.firstParentId = index.charaById.has(Number(src.firstParentId)) ? Number(src.firstParentId) : 0;
     out.grandparents = uniqueIds(src.grandparents, index.charaById).slice(0, 2);
+    const scenarioIds = (data.scenarios || []).map((sc) => sc.id);
+    out.traineeScenario = scenarioIds.includes(src.traineeScenario) ? src.traineeScenario : scenarioIds[0] || "ura";
+    out.parentScenario = src.parentScenario === "auto" || scenarioIds.includes(src.parentScenario) ? src.parentScenario : "auto";
     out.typeMin = defaultTypeMin();
     if (src.typeMin && typeof src.typeMin === "object") {
       let total = 0;
@@ -154,33 +159,53 @@
   const charaLabel = (chara) => `${chara.name} ${chara.title}`;
   const isGold = (skill) => S.isGoldSkill(skill);
   const isInheritedUnique = (skill) => skill.id >= 900000;
-  const whiteOf = (skill) => (isGold(skill) ? index.skillById.get(index.lower.get(skill.id)) || null : null);
+  const isInheritable = (skill) => S.isInheritableSkill(skill);
+  const fallbackOf = (skill) => (isInheritable(skill) ? null : index.skillById.get(S.inheritableFallback(index, skill.id)) || null);
+  const scenarioById = (id) => (data.scenarios || []).find((sc) => sc.id === id) || null;
+  const scenarioName = (id) => (scenarioById(id) || {}).name || id || "";
+  const charaByCharaId = (charaId) => data.charas.find((c) => c.charaId === charaId) || null;
 
   function skillSources(id) {
     const cards = new Set([...(index.skillCards.get(id) || []), ...(index.skillCardEvents.get(id) || [])]);
     const charas = new Set([...(index.skillCharas.get(id) || []), ...(index.skillCharaEvents.get(id) || [])]);
-    return { cards: cards.size, charas: charas.size, cardEvents: (index.skillCardEvents.get(id) || []).length, charaEvents: (index.skillCharaEvents.get(id) || []).length };
+    const scenarios = index.skillScenarios.get(id) || [];
+    return { cards: cards.size, charas: charas.size, scenarios, cardEvents: (index.skillCardEvents.get(id) || []).length, charaEvents: (index.skillCharaEvents.get(id) || []).length };
+  }
+
+  function scenarioNames(ids) {
+    return ids.map(scenarioName).join(", ");
   }
 
   function sourceBadges(id) {
-    const { cards, charas } = skillSources(id);
+    const { cards, charas, scenarios } = skillSources(id);
     const badges = [];
-    if (!cards && !charas) badges.push(h("span", { class: "badge badge-danger" }, t("skill.sources.none")));
-    else if (!cards) badges.push(h("span", { class: "badge badge-source" }, t("skill.sources.parentOnly")), h("span", { class: "badge badge-source" }, t("skill.sources.charas", { n: charas })));
-    else if (!charas) badges.push(h("span", { class: "badge badge-source" }, t("skill.sources.cardOnly")), h("span", { class: "badge badge-source" }, t("skill.sources.cards", { n: cards })));
-    else badges.push(h("span", { class: "badge badge-source" }, t("skill.sources.cards", { n: cards })), h("span", { class: "badge badge-source" }, t("skill.sources.charas", { n: charas })));
+    if (!cards && !charas && !scenarios.length) badges.push(h("span", { class: "badge badge-danger" }, t("skill.sources.none")));
+    else {
+      if (cards) badges.push(h("span", { class: "badge badge-source" }, t("skill.sources.cards", { n: cards })));
+      if (charas) badges.push(h("span", { class: "badge badge-source" }, t("skill.sources.charas", { n: charas })));
+      if (!cards && charas) badges.push(h("span", { class: "badge badge-source" }, t("skill.sources.parentOnly")));
+      if (cards && !charas) badges.push(h("span", { class: "badge badge-source" }, t("skill.sources.cardOnly")));
+      if (scenarios.length) badges.push(h("span", { class: "badge badge-scenario" }, t("skill.sources.scenario", { names: scenarioNames(scenarios) })));
+    }
     return badges;
   }
 
   function sourceText(id) {
-    const { cards, charas } = skillSources(id);
-    if (!cards && !charas) return t("skill.sources.none");
+    const { cards, charas, scenarios } = skillSources(id);
+    if (!cards && !charas && !scenarios.length) return t("skill.sources.none");
     const parts = [];
     if (cards) parts.push(t("skill.sources.cards", { n: cards }));
     if (charas) parts.push(t("skill.sources.charas", { n: charas }));
-    if (!cards) parts.unshift(t("skill.sources.parentOnly"));
-    if (!charas) parts.unshift(t("skill.sources.cardOnly"));
+    if (!cards && charas) parts.unshift(t("skill.sources.parentOnly"));
+    if (cards && !charas) parts.unshift(t("skill.sources.cardOnly"));
+    if (scenarios.length) parts.push(t("skill.sources.scenario", { names: scenarioNames(scenarios) }));
     return parts.join(" · ");
+  }
+
+  function howText(origin, scenarioId) {
+    if (!origin) return scenarioName(scenarioId);
+    const teammate = origin.teammate ? charaByCharaId(origin.teammate) : null;
+    return t(`scenario.how.${origin.how}`, { name: teammate ? teammate.name : "" });
   }
 
   function skillIcon(id, extraTitle, extraClass) {
@@ -335,11 +360,11 @@
 
   const skillItems = () =>
     data.skills
-      .filter((s) => s.id >= 200000 && s.id % 10 !== 3 && !state.wanted.includes(s.id) && !upperInWanted(s.id) && skillSources(s.id).cards + skillSources(s.id).charas > 0)
+      .filter((s) => s.id >= 200000 && s.id % 10 !== 3 && !state.wanted.includes(s.id) && !upperInWanted(s.id) && (() => { const src = skillSources(s.id); return src.cards + src.charas + src.scenarios.length > 0; })())
       .map((s) => {
         const tags = [s.cat];
-        const white = whiteOf(s);
-        if (isGold(s)) tags.push(white ? t("skill.goldWarn", { name: white.name }) : t("skill.goldNoWhite"));
+        const white = fallbackOf(s);
+        if (!isInheritable(s)) tags.push(white ? t(isGold(s) ? "skill.goldWarn" : "skill.notInheritable", { name: white.name }) : t("skill.noInheritable"));
         if (isInheritedUnique(s)) tags.push(t("skill.unique"));
         return {
           id: s.id,
@@ -495,8 +520,8 @@
 
   function excludedText(entry) {
     const card = entry.card ? index.cardById.get(entry.card) : null;
-    const params = { card: card ? card.chara : "", event: entry.event || "", n: (entry.optionIndex || 0) + 1 };
-    if (entry.reason === "goldWhiteCovered") params.name = index.skillById.get(entry.white) ? index.skillById.get(entry.white).name : "";
+    const params = { card: card ? card.chara : "", event: entry.event || "", n: (entry.optionIndex || 0) + 1, scenario: scenarioName(entry.scenario), how: entry.how ? howText(entry, entry.scenario) : "" };
+    if (entry.reason === "fallbackCovered") params.name = index.skillById.get(entry.white) ? index.skillById.get(entry.white).name : "";
     if (entry.reason === "duplicate") params.name = index.skillById.get(entry.mergedWith) ? index.skillById.get(entry.mergedWith).name : "";
     return t(`results.excluded.${entry.reason}`, params);
   }
@@ -505,7 +530,7 @@
     if (!lastResult) return null;
     const excluded = lastResult.excluded.find((e) => e.id === id);
     if (excluded) {
-      const impossible = excluded.reason === "goldWhiteCovered" || excluded.reason === "goldNoWhite";
+      const impossible = excluded.reason === "fallbackCovered" || excluded.reason === "notInheritable";
       if (excluded.reason === "duplicate") {
         const other = index.skillById.get(excluded.mergedWith);
         return h("span", { class: "badge badge-warn", title: excludedText(excluded) }, t("wanted.status.duplicate", { name: other ? other.name : "" }));
@@ -515,7 +540,7 @@
     const info = lastResult.effectiveInfo.find((e) => e.fallbackOf === id);
     if (info) {
       const white = index.skillById.get(info.id);
-      return h("span", { class: "badge badge-warn", title: t("skill.goldWarn", { name: white.name }) }, t("wanted.status.fallback", { name: white.name }));
+      return h("span", { class: "badge badge-warn", title: t(isGold(index.skillById.get(id)) ? "skill.goldWarn" : "skill.notInheritable", { name: white.name }) }, t("wanted.status.fallback", { name: white.name }));
     }
     if (lastResult.unobtainable.includes(id)) return h("span", { class: "badge badge-danger" }, t("wanted.status.impossible"));
     return null;
@@ -530,9 +555,10 @@
     list.replaceChildren(
       ...state.wanted.map((id, i) => {
         const skill = index.skillById.get(id);
-        const white = whiteOf(skill);
+        const white = fallbackOf(skill);
         const meta = [h("span", { class: "badge" }, skill.cat)];
-        if (isGold(skill)) meta.push(h("span", { class: "badge badge-gold", title: white ? t("skill.goldWarn", { name: white.name }) : t("skill.goldNoWhite") }, t("skill.gold")));
+        if (isGold(skill)) meta.push(h("span", { class: "badge badge-gold", title: white ? t("skill.goldWarn", { name: white.name }) : t("skill.noInheritable") }, t("skill.gold")));
+        else if (!isInheritable(skill)) meta.push(h("span", { class: "badge badge-warn", title: white ? t("skill.notInheritable", { name: white.name }) : t("skill.noInheritable") }, t("skill.notInheritableShort")));
         if (isInheritedUnique(skill)) meta.push(h("span", { class: "badge badge-gold" }, t("skill.unique")));
         meta.push(...sourceBadges(id));
         const status = wantedStatus(id);
@@ -649,12 +675,26 @@
     }
   }
 
+  function buildScenarioSelects() {
+    const scenarios = data.scenarios || [];
+    $("target-scenario").replaceChildren(...scenarios.map((sc) => h("option", { value: sc.id }, sc.name)));
+    $("parent-scenario").replaceChildren(h("option", { value: "auto" }, t("scenario.auto")), ...scenarios.map((sc) => h("option", { value: sc.id }, sc.name)));
+  }
+
+  function renderScenarioSelects() {
+    $("target-scenario").value = state.traineeScenario;
+    $("parent-scenario").value = state.parentScenario;
+    const auto = $("parent-scenario").querySelector('option[value="auto"]');
+    if (auto) auto.textContent = t("scenario.auto");
+  }
+
   function renderInputs() {
     renderTarget();
     renderWanted();
     renderWeightMode();
     renderParent();
     renderGrandparents();
+    renderScenarioSelects();
     renderTypeMins();
     for (const picker of Object.values(pickers)) picker.refresh();
   }
@@ -668,8 +708,8 @@
     lastResult = S.solve(index, {
       wanted: state.wanted,
       weightMode: state.weightMode,
-      target: { charaId: state.targetId, awakening: state.targetAwakening, deck: state.targetDeck },
-      parent: { charaId: state.parentId, awakening: state.parentAwakening },
+      target: { charaId: state.targetId, awakening: state.targetAwakening, deck: state.targetDeck, scenario: state.traineeScenario },
+      parent: { charaId: state.parentId, awakening: state.parentAwakening, scenario: state.parentScenario },
       typeMin: state.typeMin,
       notOwned: new Set(state.notOwned),
       notOwnedCharas: new Set(state.notOwnedCharas),
@@ -709,7 +749,7 @@
       );
     }
     if (!state.wanted.length) blocks.push(h("div", { class: "notice info" }, t("results.empty")));
-    const impossible = result.excluded.filter((e) => e.reason === "goldWhiteCovered" || e.reason === "goldNoWhite");
+    const impossible = result.excluded.filter((e) => e.reason === "fallbackCovered" || e.reason === "notInheritable");
     const covered = result.excluded.filter((e) => !impossible.includes(e));
     if (covered.length) {
       blocks.push(
@@ -732,7 +772,7 @@
             { class: "chip-list" },
             result.traineeChoices.map((pick) => {
               const card = pick.card ? index.cardById.get(pick.card) : null;
-              const label = (card ? `${card.chara}: ` : "") + t("results.choice", { event: pick.name, n: pick.optionIndex + 1 });
+              const label = pick.owner === "scenario" ? `${scenarioName(pick.scenario)}: ${howText({ how: pick.how }, pick.scenario)}` : (card ? `${card.chara}: ` : "") + t("results.choice", { event: pick.name, n: pick.optionIndex + 1 });
               return h("span", { class: "chip", title: pick.option }, h("span", { class: "chip-text" }, label, h("span", { class: "chip-sub" }, pick.skills.map((id) => index.skillById.get(id).name).join(", "))));
             })
           )
@@ -795,13 +835,20 @@
             { class: "body" },
             h("div", { class: "name" }, chara.name),
             h("div", { class: "title" }, chara.title),
-            h("div", { class: "stats" }, h("span", { class: "badge" }, t("parent.covers", { a: p.coveredCount, b: result.effective.length })), h("span", { class: "badge" }, t("parent.cards", { n: p.cardCount }))),
-            p.innate.length || p.viaEvents.length || p.viaGrand.length
+            h(
+              "div",
+              { class: "stats" },
+              h("span", { class: "badge" }, t("parent.covers", { a: p.coveredCount, b: result.effective.length })),
+              h("span", { class: "badge" }, t("parent.cards", { n: p.cardCount })),
+              p.scenario ? h("span", { class: "badge badge-scenario", title: p.scenario.origins.map((o) => `${index.skillById.get(o.id).name}: ${howText(o.origin, p.scenario.id)}`).join("\n") }, t("parent.trainIn", { name: p.scenario.name })) : null
+            ),
+            p.innate.length || p.viaEvents.length || p.viaGrand.length || p.viaScenario.length
               ? h(
                   "div",
                   { class: "innate", title: choiceTitle || t("parent.innate") },
                   p.innate.map((id) => skillIcon(id, t("deck.fromParent"))),
                   p.viaEvents.map((id) => skillIcon(id, t("deck.fromParentEvent"), "via-event")),
+                  p.viaScenario.map((id) => skillIcon(id, p.scenario ? p.scenario.name : "", "via-scenario")),
                   p.viaGrand.map((id) => skillIcon(id, t("deck.fromGrandShort"), "via-grand"))
                 )
               : null
@@ -870,13 +917,15 @@
       const skill = index.skillById.get(c.id);
       let note;
       if (c.from === "parent") note = c.viaEvent ? t("deck.fromParentEvent") : t("deck.fromParent");
+      else if (c.from === "scenario") note = t("deck.fromScenario", { scenario: scenarioName(c.scenario), how: howText(c.origin, c.scenario) });
       else if (c.from === "grandparent") note = t("deck.fromGrand", { name: c.grandparent ? charaLabel(index.charaById.get(c.grandparent)) : "" });
       else note = c.cards.map((id) => index.cardById.get(id).chara).join(", ") + (c.viaEvent ? ` (${t("deck.viaEvent")})` : "");
       return h("div", { class: "skill-row" }, skillIcon(c.id), skillNameNode(skill), h("span", { class: "note" }, note));
     });
     const missing = deck.missing.map((m) => {
       const skill = index.skillById.get(m.id);
-      return h("div", { class: "skill-row missing" }, skillIcon(m.id), skillNameNode(skill), h("span", { class: "note" }, t(`deck.missing.${m.reason}`)));
+      const note = m.reason === "scenario" ? t("deck.missing.scenario", { names: scenarioNames(m.via || []) }) : t(`deck.missing.${m.reason}`);
+      return h("div", { class: "skill-row missing" }, skillIcon(m.id), skillNameNode(skill), h("span", { class: "note" }, note));
     });
     return h(
       "div",
@@ -934,13 +983,29 @@
           via.filter((c) => state.grandparents.length < 2 && !grandCharaIds().includes(c.charaId)).map((c) => h("button", { type: "button", class: "btn btn-ghost btn-small", onclick: () => addGrandparent(c.id) }, t("results.addGrand", { name: c.name })))
         );
       });
-    const rest = leftovers.filter((m) => m.reason !== "grandparent");
+    const scenarioRows = leftovers
+      .filter((m) => m.reason === "scenario")
+      .map((m) => {
+        const skill = index.skillById.get(m.id);
+        const ids = (m.via || []).filter((id) => scenarioById(id));
+        return h(
+          "div",
+          { class: "grand-row" },
+          skillIcon(m.id),
+          skillNameNode(skill),
+          h("span", { class: "note" }, t("deck.missing.scenario", { names: scenarioNames(ids) })),
+          ids.filter((id) => state.parentScenario !== id).map((id) => h("button", { type: "button", class: "btn btn-ghost btn-small", onclick: () => update(() => {
+            state.parentScenario = id;
+          }) }, t("results.trainIn", { name: scenarioName(id) })))
+        );
+      });
+    const rest = leftovers.filter((m) => m.reason !== "grandparent" && m.reason !== "scenario");
     return h(
       "div",
       { class: "notice warn" },
       h("div", { class: "notice-title" }, t("results.leftover", { name: chara.name })),
       rest.length ? h("div", { class: "chip-list" }, rest.map((m) => skillChip(originalWantedId(result, m.id), t(`deck.missing.${m.reason}`), "muted"))) : null,
-      grandRows.length ? h("div", { class: "grand-rows" }, grandRows) : null,
+      grandRows.length || scenarioRows.length ? h("div", { class: "grand-rows" }, grandRows, scenarioRows) : null,
       rest.length ? h("div", { class: "notice-actions" }, h("button", { type: "button", class: "btn btn-small", onclick: () => planSecondParent(result, current) }, t("results.planSecond"))) : null
     );
   }
@@ -1075,8 +1140,15 @@
     I.setLanguage(state.lang);
     I.applyStatic();
     renderAwakeningSelects();
+    buildScenarioSelects();
     buildTypeMins();
     buildPickers();
+    $("target-scenario").addEventListener("change", (e) => update(() => {
+      state.traineeScenario = e.target.value;
+    }));
+    $("parent-scenario").addEventListener("change", (e) => update(() => {
+      state.parentScenario = e.target.value;
+    }));
     $("target-awakening").addEventListener("change", (e) => update(() => {
       state.targetAwakening = clampInt(e.target.value, 1, 5, 5);
     }));

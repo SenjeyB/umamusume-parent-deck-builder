@@ -240,6 +240,21 @@ img.via-grand {
   border-radius: 6px;
 }
 
+img.via-scenario {
+  outline: 2px dashed #4cc9f0;
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+
+.badge-scenario {
+  color: #4cc9f0;
+  border-color: #4cc9f0;
+}
+
+.select-scenario {
+  max-width: 190px;
+}
+
 .grand-rows {
   display: flex;
   flex-direction: column;

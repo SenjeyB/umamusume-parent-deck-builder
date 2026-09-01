@@ -16,6 +16,61 @@ const GAMETORA_CONCURRENCY = 4;
 const GAMETORA_DELAY_MS = 120;
 
 const TYPE_BY_COMMAND = { 101: "speed", 105: "stamina", 102: "power", 103: "guts", 106: "wit" };
+
+const SCENARIOS = [
+  { id: "ura", name: "URA Finale", grants: [], teammates: [] },
+  {
+    id: "unity",
+    name: "Unity Cup",
+    grants: [
+      { how: "extremeBurst", skills: [210012, 210022, 210032, 210042, 210052] },
+      { how: "zenith", options: [{ skills: [210011] }, { skills: [210021] }, { skills: [210031] }, { skills: [210041] }, { skills: [210051] }] },
+      { how: "teamRankS", skills: [200461] },
+    ],
+    teammates: [1052, 1030, 1056, 1010],
+  },
+  {
+    id: "trackblazer",
+    name: "Trackblazer",
+    grants: [
+      { how: "umaOfYear", skills: [210062] },
+      { how: "climaxWin", skills: [210061] },
+    ],
+    teammates: [],
+  },
+  {
+    id: "concert",
+    name: "Grand Concert",
+    grants: [
+      {
+        how: "songs16",
+        options: [
+          { skills: [202281], link: 1046, fallback: [202282] },
+          { skills: [200431], link: 1026, fallback: [200432] },
+          { skills: [201701], link: 1032, fallback: [201702] },
+          { skills: [200711], link: 1002, fallback: [200712] },
+          { skills: [200501] },
+        ],
+      },
+      { how: "songs18", skills: [210071] },
+    ],
+    teammates: [],
+  },
+];
+
+const EXPECTED_SKILL_NAMES = {
+  210012: "Ignited Spirit SPD",
+  210011: "Burning Spirit SPD",
+  200461: "It's On!",
+  210062: "Glittering Star",
+  210061: "Radiant Star",
+  202281: "Full Speed!",
+  200431: "Concentration",
+  201701: "Come What May",
+  200711: "Trackblazer",
+  200501: "Lane Legerdemain",
+  210071: "I Wanna Win with You",
+};
 const IMAGE_SIZES = { card: [120, 160], skill: [64, 64], chara: [72, 116] };
 
 const args = new Set(process.argv.slice(2));
@@ -95,9 +150,10 @@ function isArrayOf(value, ...keys) {
 }
 
 function pickTables(mod) {
-  const tables = { cards: null, charas: null, skills: null, overrides: null };
+  const tables = { cards: null, charas: null, skills: null, overrides: null, sparks: null };
   for (const value of Object.values(mod)) {
     if (isArrayOf(value, "supportCardId", "skillHints", "rarityDisplay")) tables.cards = value;
+    else if (isArrayOf(value, "id", "name", "description", "rarity", "grade", "type") && value.some((v) => v.type === 4)) tables.sparks = value;
     else if (isArrayOf(value, "charaId", "potentialSkills", "cardTitle")) tables.charas = value;
     else if (isArrayOf(value, "skillId", "skillName", "supportCardIds", "iconId")) tables.skills = value;
     else if (value && typeof value === "object" && Array.isArray(value.supportCards) && Array.isArray(value.characters) && Array.isArray(value.skills)) tables.overrides = value;
@@ -159,11 +215,53 @@ function computeLowerLinks(skills) {
   return lower;
 }
 
-function buildDataset({ cards, charas, skills, overrides }) {
+function computeInheritable(skills, sparks) {
+  const sparkFamilies = new Set(sparks.filter((s) => s.type === 4).map((s) => Math.floor(s.id / 100)));
+  const sparkNames = new Set(sparks.filter((s) => s.type === 4).map((s) => s.name));
+  const families = new Map();
+  for (const s of skills) {
+    const family = Math.floor(s.skillId / 10);
+    if (!families.has(family)) families.set(family, []);
+    families.get(family).push(s);
+  }
+  const inheritable = new Set();
+  for (const [family, members] of families) {
+    if (!sparkFamilies.has(family)) continue;
+    const candidates = members.filter((s) => s.rarity === 1 && !/[◎×]/.test(s.skillName));
+    if (!candidates.length) continue;
+    const pick = candidates.find((s) => sparkNames.has(s.skillName)) || candidates.find((s) => s.skillId % 10 !== 3) || candidates[0];
+    inheritable.add(pick.skillId);
+  }
+  return inheritable;
+}
+
+function buildScenarios(skillById) {
+  for (const [id, name] of Object.entries(EXPECTED_SKILL_NAMES)) {
+    const skill = skillById.get(Number(id));
+    if (!skill) console.warn(`  scenario skill ${id} (${name}) is missing from the skill list`);
+    else if (skill.skillName !== name) console.warn(`  scenario skill ${id} is "${skill.skillName}", expected "${name}"`);
+  }
+  return SCENARIOS.map((sc) => ({
+    id: sc.id,
+    name: sc.name,
+    teammates: sc.teammates,
+    grants: sc.grants
+      .map((g) => ({
+        how: g.how,
+        skills: (g.skills || []).filter((id) => skillById.has(id)),
+        options: (g.options || []).map((o) => ({ skills: o.skills.filter((id) => skillById.has(id)), link: o.link || 0, fallback: (o.fallback || []).filter((id) => skillById.has(id)) })).filter((o) => o.skills.length),
+      }))
+      .filter((g) => g.skills.length || g.options.length),
+  }));
+}
+
+function buildDataset({ cards, charas, skills, overrides, sparks }) {
   const groupNames = new Map((overrides.supportCards || []).map((o) => [o.supportCardId, o.charaName]));
   const skillOverrides = new Map((overrides.characters || []).map((o) => [o.cardId, o.skillIds]));
   const skillById = new Map(skills.map((s) => [s.skillId, s]));
-  const lowerLinks = computeLowerLinks(skills.filter((s) => s.skillId >= 200000 && s.skillId < 900000));
+  const normalSkills = skills.filter((s) => s.skillId >= 200000 && s.skillId < 900000);
+  const lowerLinks = computeLowerLinks(normalSkills);
+  const inheritable = computeInheritable(normalSkills, sparks);
 
   const outCards = cards
     .map((c) => ({
@@ -211,6 +309,7 @@ function buildDataset({ cards, charas, skills, overrides }) {
       icon: s.iconId,
       sp: s.needSkillPoint || 0,
       low: lowerLinks.get(s.skillId) || 0,
+      inh: inheritable.has(s.skillId) || s.skillId >= 900000 ? 1 : 0,
       desc: cleanDescription(s.skillDesc),
     }))
     .sort((a, b) => a.id - b.id);
@@ -223,6 +322,7 @@ function buildDataset({ cards, charas, skills, overrides }) {
     skills: outSkills,
     cards: outCards,
     charas: outCharas,
+    scenarios: buildScenarios(skillById),
   };
 }
 
