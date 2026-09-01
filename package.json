@@ -1,0 +1,14 @@
+{
+  "name": "umamusume-parent-deck-builder",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Static parent deck builder for Umamusume: Pretty Derby (Global)",
+  "scripts": {
+    "data": "node scripts/build-data.mjs",
+    "serve": "python3 -m http.server 8080"
+  },
+  "optionalDependencies": {
+    "sharp": "^0.34.0"
+  }
+}

@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Uma Parent Deck Builder</title>
+    <meta name="description" content="Pick a parent uma and a support card deck that pass down the skills your Umamusume trainee is missing." />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="img/skill/20011.webp" type="image/webp" />
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img class="brand-icon" src="img/skill/20011.webp" alt="" width="36" height="36" />
+        <div>
+          <h1 data-i18n="app.title">Uma Parent Deck Builder</h1>
+          <p class="subtitle" data-i18n="app.subtitle"></p>
+        </div>
+        <span class="badge badge-server" data-i18n="app.server">Global</span>
+      </div>
+      <div class="topbar-actions">
+        <button type="button" class="btn" id="btn-share" data-i18n="action.share"></button>
+        <button type="button" class="btn btn-ghost" id="btn-reset" data-i18n="action.reset"></button>
+        <div class="lang-switch" id="lang-switch">
+          <button type="button" class="btn btn-ghost" data-lang="en">EN</button>
+          <button type="button" class="btn btn-ghost" data-lang="ru">RU</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="column column-inputs">
+        <section class="panel" id="panel-target">
+          <h2 data-i18n="section.target"></h2>
+          <p class="hint" data-i18n="section.targetHint"></p>
+          <div class="selected-chara" id="target-selected"></div>
+          <div class="picker" id="target-picker"></div>
+          <label class="field-row">
+            <span data-i18n="awakening"></span>
+            <select id="target-awakening" class="select-awakening"></select>
+          </label>
+          <h3 data-i18n="target.deck"></h3>
+          <p class="hint" data-i18n="target.deckHint"></p>
+          <div class="chip-list" id="target-deck"></div>
+          <div class="picker" id="target-deck-picker"></div>
+        </section>
+
+        <section class="panel" id="panel-wanted">
+          <h2 data-i18n="section.wanted"></h2>
+          <p class="hint" data-i18n="section.wantedHint"></p>
+          <div class="picker" id="wanted-picker"></div>
+          <ol class="wanted-list" id="wanted-list"></ol>
+          <div class="mode-block">
+            <span class="mode-title" data-i18n="wanted.mode"></span>
+            <div class="mode-options" id="weight-mode"></div>
+            <p class="hint" id="weight-mode-hint"></p>
+          </div>
+        </section>
+
+        <section class="panel" id="panel-parent">
+          <h2 data-i18n="section.parent"></h2>
+          <p class="hint" data-i18n="section.parentHint"></p>
+          <div class="selected-chara" id="parent-selected"></div>
+          <div class="picker" id="parent-picker"></div>
+          <label class="field-row">
+            <span data-i18n="awakening"></span>
+            <select id="parent-awakening" class="select-awakening"></select>
+          </label>
+          <h3 data-i18n="types.title"></h3>
+          <p class="hint" data-i18n="types.hint"></p>
+          <div class="type-grid" id="type-mins"></div>
+          <p class="hint" id="type-total"></p>
+        </section>
+      </aside>
+
+      <section class="column column-results">
+        <div id="summary" class="summary"></div>
+        <section class="panel">
+          <h2 data-i18n="results.parents"></h2>
+          <p class="hint" data-i18n="results.parentsHint"></p>
+          <div class="parent-list" id="parents"></div>
+        </section>
+        <section class="panel">
+          <h2 id="decks-title"></h2>
+          <p class="hint" data-i18n="results.decksHint"></p>
+          <div class="deck-list" id="decks"></div>
+        </section>
+        <section class="panel">
+          <h2 data-i18n="notOwned.title"></h2>
+          <p class="hint" data-i18n="notOwned.hint"></p>
+          <div class="chip-list" id="not-owned"></div>
+          <div class="row-end"><button type="button" class="btn btn-ghost" id="btn-clear-not-owned" data-i18n="notOwned.clear"></button></div>
+        </section>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span data-i18n="footer.data"></span>
+      <span id="footer-generated"></span>
+      <a href="https://github.com/SenjeyB/umamusume-parent-deck-builder" rel="noopener">GitHub</a>
+    </footer>
+
+    <div class="toast" id="toast" hidden></div>
+
+    <script src="data/gl.js"></script>
+    <script src="js/i18n.js"></script>
+    <script src="js/solver.js"></script>
+    <script src="js/app.js"></script>
+  </body>
+</html>

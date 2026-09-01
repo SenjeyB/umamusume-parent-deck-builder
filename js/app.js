@@ -1,0 +1,810 @@
+(function () {
+  const data = window.UMA_DATA;
+  const S = window.UmaSolver;
+  const I = window.I18N;
+  const t = I.t;
+  const index = S.createIndex(data);
+  const STORAGE_KEY = "updb-state-v1";
+  const MAX_DECK = S.DECK_SIZE;
+  const $ = (id) => document.getElementById(id);
+
+  function h(tag, attrs, ...children) {
+    const el = document.createElement(tag);
+    if (attrs) {
+      for (const [key, value] of Object.entries(attrs)) {
+        if (value === null || value === undefined || value === false) continue;
+        if (key === "class") el.className = value;
+        else if (key === "dataset") Object.assign(el.dataset, value);
+        else if (key.startsWith("on")) el.addEventListener(key.slice(2), value);
+        else if (key === "hidden") el.hidden = Boolean(value);
+        else if (value === true) el.setAttribute(key, "");
+        else el.setAttribute(key, value);
+      }
+    }
+    for (const child of children.flat(Infinity)) {
+      if (child === null || child === undefined || child === false) continue;
+      el.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    }
+    return el;
+  }
+
+  function defaultTypeMin() {
+    const mins = {};
+    for (const type of S.TYPES) mins[type] = 0;
+    mins.speed = 1;
+    return mins;
+  }
+
+  function defaultState() {
+    return {
+      lang: /^ru\b/i.test(navigator.language || "") ? "ru" : "en",
+      targetId: 0,
+      targetAwakening: 5,
+      targetDeck: [],
+      wanted: [],
+      weightMode: "balanced",
+      parentId: 0,
+      parentAwakening: 5,
+      typeMin: defaultTypeMin(),
+      notOwned: [],
+      viewParentId: 0,
+    };
+  }
+
+  function sanitize(raw) {
+    const base = defaultState();
+    const src = raw && typeof raw === "object" ? raw : {};
+    const out = Object.assign({}, base);
+    out.lang = I.languages.includes(src.lang) ? src.lang : base.lang;
+    out.targetId = index.charaById.has(Number(src.targetId)) ? Number(src.targetId) : 0;
+    out.parentId = index.charaById.has(Number(src.parentId)) ? Number(src.parentId) : 0;
+    out.viewParentId = index.charaById.has(Number(src.viewParentId)) ? Number(src.viewParentId) : 0;
+    out.targetAwakening = clampInt(src.targetAwakening, 1, 5, 5);
+    out.parentAwakening = clampInt(src.parentAwakening, 1, 5, 5);
+    out.weightMode = ["balanced", "strict", "count"].includes(src.weightMode) ? src.weightMode : "balanced";
+    out.targetDeck = uniqueIds(src.targetDeck, index.cardById).slice(0, MAX_DECK);
+    out.wanted = uniqueIds(src.wanted, index.skillById).slice(0, S.MAX_WANTED);
+    out.notOwned = uniqueIds(src.notOwned, index.cardById);
+    out.typeMin = defaultTypeMin();
+    if (src.typeMin && typeof src.typeMin === "object") {
+      let total = 0;
+      for (const type of S.TYPES) {
+        const value = clampInt(src.typeMin[type], 0, MAX_DECK, 0);
+        out.typeMin[type] = Math.min(value, MAX_DECK - total);
+        total += out.typeMin[type];
+      }
+    }
+    return out;
+  }
+
+  function clampInt(value, min, max, fallback) {
+    const n = Math.floor(Number(value));
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
+  }
+
+  function uniqueIds(list, map) {
+    const out = [];
+    for (const raw of Array.isArray(list) ? list : []) {
+      const id = Number(raw);
+      if (map.has(id) && !out.includes(id)) out.push(id);
+    }
+    return out;
+  }
+
+  function encodeState(st) {
+    const payload = Object.assign({}, st);
+    delete payload.lang;
+    delete payload.viewParentId;
+    const json = JSON.stringify(payload);
+    return btoa(unescape(encodeURIComponent(json))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  function decodeState(text) {
+    try {
+      const b64 = text.replace(/-/g, "+").replace(/_/g, "/");
+      const json = decodeURIComponent(escape(atob(b64)));
+      return JSON.parse(json);
+    } catch {
+      return null;
+    }
+  }
+
+  function loadState() {
+    let stored = null;
+    try {
+      stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+    } catch {
+      stored = null;
+    }
+    const shared = new URLSearchParams(location.hash.replace(/^#/, "")).get("s");
+    if (shared) {
+      const decoded = decodeState(shared);
+      if (decoded) {
+        const merged = Object.assign({}, stored || {}, decoded, { lang: stored && stored.lang });
+        history.replaceState(null, "", location.pathname + location.search);
+        return sanitize(merged);
+      }
+    }
+    return sanitize(stored);
+  }
+
+  function saveState() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch {
+      return;
+    }
+  }
+
+  let state = loadState();
+  let lastResult = null;
+  let computeTimer = 0;
+
+  const cardImg = (id) => `img/card/${id}.webp`;
+  const charaImg = (id) => `img/chara/${id}.webp`;
+  const skillImg = (skill) => `img/skill/${skill.icon || 20011}.webp`;
+  const cardLabel = (card) => `${card.chara} ${card.title}`;
+  const isGold = (skill) => skill.rar >= 2 && skill.id < 900000;
+  const isInheritedUnique = (skill) => skill.id >= 900000;
+
+  function skillSources(id) {
+    return { cards: (index.skillCards.get(id) || []).length, charas: (index.skillCharas.get(id) || []).length };
+  }
+
+  function sourceBadges(id) {
+    const { cards, charas } = skillSources(id);
+    const badges = [];
+    if (!cards && !charas) badges.push(h("span", { class: "badge badge-danger" }, t("skill.sources.none")));
+    else if (!cards) badges.push(h("span", { class: "badge badge-source" }, t("skill.sources.parentOnly")), h("span", { class: "badge badge-source" }, t("skill.sources.charas", { n: charas })));
+    else if (!charas) badges.push(h("span", { class: "badge badge-source" }, t("skill.sources.cardOnly")), h("span", { class: "badge badge-source" }, t("skill.sources.cards", { n: cards })));
+    else badges.push(h("span", { class: "badge badge-source" }, t("skill.sources.cards", { n: cards })), h("span", { class: "badge badge-source" }, t("skill.sources.charas", { n: charas })));
+    return badges;
+  }
+
+  function sourceText(id) {
+    const { cards, charas } = skillSources(id);
+    if (!cards && !charas) return t("skill.sources.none");
+    const parts = [];
+    if (cards) parts.push(t("skill.sources.cards", { n: cards }));
+    if (charas) parts.push(t("skill.sources.charas", { n: charas }));
+    if (!cards) parts.unshift(t("skill.sources.parentOnly"));
+    if (!charas) parts.unshift(t("skill.sources.cardOnly"));
+    return parts.join(" · ");
+  }
+
+  function skillIcon(id, extraTitle) {
+    const skill = index.skillById.get(id);
+    if (!skill) return null;
+    const title = skill.name + (extraTitle ? ` · ${extraTitle}` : "") + (skill.desc ? `\n${skill.desc}` : "");
+    return h("img", { src: skillImg(skill), alt: skill.name, title, loading: "lazy" });
+  }
+
+  function skillNameNode(skill) {
+    return h("span", { class: "name" + (isGold(skill) ? " gold" : ""), title: skill.desc || "" }, skill.name);
+  }
+
+  function createPicker({ mount, placeholderKey, getItems, onSelect, limit = 40 }) {
+    const input = h("input", { class: "picker-input", type: "search", autocomplete: "off", spellcheck: "false", placeholder: t(placeholderKey) });
+    const list = h("div", { class: "picker-list", hidden: true });
+    mount.replaceChildren(input, list);
+    let items = [];
+    let active = -1;
+
+    function render() {
+      const query = input.value.trim().toLowerCase();
+      const words = query.split(/\s+/).filter(Boolean);
+      items = getItems()
+        .filter((item) => words.every((w) => item.search.includes(w)))
+        .slice(0, limit);
+      list.replaceChildren(
+        ...items.map((item, i) =>
+          h(
+            "div",
+            {
+              class: "picker-item" + (i === active ? " active" : ""),
+              onmousedown: (e) => {
+                e.preventDefault();
+                choose(item);
+              },
+            },
+            item.img ? h("img", { src: item.img, alt: "", loading: "lazy", class: item.imgClass || "" }) : null,
+            h("div", { class: "picker-text" }, h("div", { class: "picker-label" }, item.label), item.sub ? h("div", { class: "picker-sub" }, item.sub) : null),
+            item.badge ? h("span", { class: "badge " + (item.badgeClass || "") }, item.badge) : null
+          )
+        )
+      );
+      if (!items.length) list.append(h("div", { class: "picker-empty" }, t("picker.empty")));
+    }
+
+    function open() {
+      render();
+      list.hidden = false;
+    }
+
+    function close() {
+      list.hidden = true;
+      active = -1;
+    }
+
+    function choose(item) {
+      input.value = "";
+      close();
+      onSelect(item);
+    }
+
+    input.addEventListener("input", () => {
+      active = -1;
+      open();
+    });
+    input.addEventListener("focus", open);
+    input.addEventListener("blur", () => setTimeout(close, 120));
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (list.hidden) open();
+        active = Math.min(items.length - 1, active + 1);
+        render();
+        scrollActive();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        active = Math.max(0, active - 1);
+        render();
+        scrollActive();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const item = items[active >= 0 ? active : 0];
+        if (item) choose(item);
+      } else if (e.key === "Escape") {
+        close();
+      }
+    });
+
+    function scrollActive() {
+      const el = list.children[active];
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+    }
+
+    return {
+      refresh() {
+        input.placeholder = t(placeholderKey);
+        if (!list.hidden) render();
+      },
+    };
+  }
+
+  const charaItems = () =>
+    data.charas.map((c) => ({
+      id: c.id,
+      label: c.name,
+      sub: c.title,
+      img: charaImg(c.id),
+      search: `${c.name} ${c.title}`.toLowerCase(),
+    }));
+
+  const cardItems = () =>
+    data.cards
+      .filter((c) => !state.targetDeck.includes(c.id))
+      .slice()
+      .sort((a, b) => b.rar - a.rar || a.chara.localeCompare(b.chara) || a.id - b.id)
+      .map((c) => ({
+        id: c.id,
+        label: cardLabel(c),
+        sub: `${t(`rarity.${c.rar}`)} · ${t(`type.${c.type}`)}`,
+        img: cardImg(c.id),
+        imgClass: "thumb-card",
+        search: `${c.chara} ${c.title} ${t(`rarity.${c.rar}`)} ${t(`type.${c.type}`)} ${c.type}`.toLowerCase(),
+      }));
+
+  const skillItems = () =>
+    data.skills
+      .filter((s) => s.id >= 200000 && s.id % 10 !== 3 && !state.wanted.includes(s.id) && (index.skillCards.has(s.id) || index.skillCharas.has(s.id)))
+      .map((s) => {
+        const tags = [s.cat];
+        if (isGold(s)) tags.push(t("skill.gold"));
+        if (isInheritedUnique(s)) tags.push(t("skill.unique"));
+        return {
+          id: s.id,
+          label: s.name,
+          sub: `${tags.join(" · ")} · ${sourceText(s.id)}`,
+          img: skillImg(s),
+          search: `${s.name} ${s.cat}`.toLowerCase(),
+          badge: isGold(s) ? t("skill.gold") : null,
+          badgeClass: "badge-gold",
+        };
+      });
+
+  let pickers = {};
+
+  function buildPickers() {
+    pickers.target = createPicker({
+      mount: $("target-picker"),
+      placeholderKey: "target.pick",
+      getItems: charaItems,
+      onSelect: (item) => update(() => {
+        state.targetId = item.id;
+      }),
+    });
+    pickers.deck = createPicker({
+      mount: $("target-deck-picker"),
+      placeholderKey: "target.addCard",
+      getItems: cardItems,
+      onSelect: (item) => update(() => {
+        if (state.targetDeck.length < MAX_DECK && !state.targetDeck.includes(item.id)) state.targetDeck.push(item.id);
+      }),
+    });
+    pickers.wanted = createPicker({
+      mount: $("wanted-picker"),
+      placeholderKey: "wanted.pick",
+      getItems: skillItems,
+      onSelect: (item) => update(() => {
+        if (state.wanted.length < S.MAX_WANTED && !state.wanted.includes(item.id)) state.wanted.push(item.id);
+      }),
+    });
+    pickers.parent = createPicker({
+      mount: $("parent-picker"),
+      placeholderKey: "parent.pick",
+      getItems: charaItems,
+      onSelect: (item) => update(() => {
+        state.parentId = item.id;
+      }),
+    });
+  }
+
+  function update(mutator, options) {
+    mutator();
+    if (!(options && options.keepView)) state.viewParentId = 0;
+    saveState();
+    renderInputs();
+    scheduleCompute();
+  }
+
+  function renderSelectedChara(mount, charaId, emptyLabel, onClear) {
+    const chara = index.charaById.get(charaId);
+    if (!chara) {
+      mount.replaceChildren(emptyLabel ? h("span", { class: "badge" }, emptyLabel) : null);
+      return;
+    }
+    mount.replaceChildren(
+      h("img", { src: charaImg(chara.id), alt: "" }),
+      h("div", null, h("div", { class: "name" }, chara.name), h("div", { class: "title" }, chara.title)),
+      h("span", { class: "spacer" }),
+      h("button", { type: "button", class: "icon-btn danger", title: t("action.reset"), onclick: onClear }, "✕")
+    );
+  }
+
+  function renderTarget() {
+    renderSelectedChara($("target-selected"), state.targetId, null, () => update(() => {
+      state.targetId = 0;
+    }));
+    $("target-awakening").value = String(state.targetAwakening);
+    $("target-deck").replaceChildren(
+      ...state.targetDeck.map((id) => {
+        const card = index.cardById.get(id);
+        return h(
+          "span",
+          { class: `chip type-${card.type}` },
+          h("img", { src: cardImg(card.id), alt: "" }),
+          h("span", { class: "chip-text" }, card.chara, h("span", { class: "chip-sub" }, `${card.title} · ${t(`rarity.${card.rar}`)} · ${t(`type.short.${card.type}`)}`)),
+          h("button", { type: "button", class: "icon-btn danger", title: t("action.reset"), onclick: () => update(() => {
+            state.targetDeck = state.targetDeck.filter((x) => x !== id);
+          }) }, "✕")
+        );
+      })
+    );
+    $("target-deck-picker").hidden = state.targetDeck.length >= MAX_DECK;
+  }
+
+  let dragIndex = -1;
+
+  function moveWanted(from, to) {
+    if (from === to || from < 0 || to < 0 || from >= state.wanted.length || to >= state.wanted.length) return;
+    update(() => {
+      const [item] = state.wanted.splice(from, 1);
+      state.wanted.splice(to, 0, item);
+    });
+  }
+
+  function renderWanted() {
+    const list = $("wanted-list");
+    if (!state.wanted.length) {
+      list.replaceChildren(h("li", { class: "wanted-empty" }, t("wanted.empty")));
+      return;
+    }
+    list.replaceChildren(
+      ...state.wanted.map((id, i) => {
+        const skill = index.skillById.get(id);
+        const meta = [h("span", { class: "badge" }, skill.cat)];
+        if (isGold(skill)) meta.push(h("span", { class: "badge badge-gold" }, t("skill.gold")));
+        if (isInheritedUnique(skill)) meta.push(h("span", { class: "badge badge-gold" }, t("skill.unique")));
+        meta.push(...sourceBadges(id));
+        return h(
+          "li",
+          {
+            class: "wanted-item",
+            draggable: "true",
+            ondragstart: (e) => {
+              dragIndex = i;
+              e.currentTarget.classList.add("dragging");
+              e.dataTransfer.effectAllowed = "move";
+              e.dataTransfer.setData("text/plain", String(i));
+            },
+            ondragend: (e) => {
+              e.currentTarget.classList.remove("dragging");
+              for (const el of list.querySelectorAll(".drop-target")) el.classList.remove("drop-target");
+            },
+            ondragover: (e) => {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              e.currentTarget.classList.add("drop-target");
+            },
+            ondragleave: (e) => e.currentTarget.classList.remove("drop-target"),
+            ondrop: (e) => {
+              e.preventDefault();
+              const from = dragIndex >= 0 ? dragIndex : Number(e.dataTransfer.getData("text/plain"));
+              dragIndex = -1;
+              moveWanted(from, i);
+            },
+          },
+          h("span", { class: "rank" }, i + 1),
+          h("img", { src: skillImg(skill), alt: "" }),
+          h("div", { class: "skill-name" + (isGold(skill) ? " gold" : "") }, skillNameNode(skill), h("span", { class: "skill-meta" }, meta)),
+          h(
+            "div",
+            { class: "controls" },
+            h("button", { type: "button", class: "icon-btn", disabled: i === 0, onclick: () => moveWanted(i, i - 1) }, "↑"),
+            h("button", { type: "button", class: "icon-btn", disabled: i === state.wanted.length - 1, onclick: () => moveWanted(i, i + 1) }, "↓"),
+            h("button", { type: "button", class: "icon-btn danger", onclick: () => update(() => {
+              state.wanted = state.wanted.filter((x) => x !== id);
+            }) }, "✕")
+          )
+        );
+      })
+    );
+  }
+
+  function renderWeightMode() {
+    const modes = ["balanced", "strict", "count"];
+    $("weight-mode").replaceChildren(
+      ...modes.map((mode) =>
+        h("button", { type: "button", class: "btn btn-ghost" + (state.weightMode === mode ? " active" : ""), onclick: () => update(() => {
+          state.weightMode = mode;
+        }) }, t(`wanted.mode.${mode}`))
+      )
+    );
+    $("weight-mode-hint").textContent = t(`wanted.mode.${state.weightMode}Hint`);
+  }
+
+  function renderParent() {
+    renderSelectedChara($("parent-selected"), state.parentId, t("parent.auto"), () => update(() => {
+      state.parentId = 0;
+    }));
+    $("parent-awakening").value = String(state.parentAwakening);
+  }
+
+  function buildTypeMins() {
+    const grid = $("type-mins");
+    grid.replaceChildren(
+      ...S.TYPES.map((type) =>
+        h(
+          "label",
+          { class: `type-row type-${type}` },
+          h("span", { dataset: { typeLabel: type } }, h("i", { class: "type-dot" }), t(`type.${type}`)),
+          h("input", {
+            type: "number",
+            min: "0",
+            max: String(MAX_DECK),
+            dataset: { type },
+            onchange: (e) => {
+              const others = S.TYPES.filter((x) => x !== type).reduce((sum, x) => sum + state.typeMin[x], 0);
+              const value = clampInt(e.target.value, 0, Math.max(0, MAX_DECK - others), 0);
+              if (value === state.typeMin[type]) {
+                e.target.value = String(value);
+                return;
+              }
+              update(() => {
+                state.typeMin[type] = value;
+              });
+            },
+          })
+        )
+      )
+    );
+  }
+
+  function renderTypeMins() {
+    for (const input of $("type-mins").querySelectorAll("input[data-type]")) input.value = String(state.typeMin[input.dataset.type]);
+    for (const span of $("type-mins").querySelectorAll("[data-type-label]")) span.lastChild.textContent = t(`type.${span.dataset.typeLabel}`);
+    const total = S.TYPES.reduce((sum, x) => sum + state.typeMin[x], 0);
+    $("type-total").textContent = t("types.reserved", { n: total });
+  }
+
+  function renderAwakeningSelects() {
+    for (const id of ["target-awakening", "parent-awakening"]) {
+      const select = $(id);
+      select.replaceChildren(...[1, 2, 3, 4, 5].map((n) => h("option", { value: String(n) }, `Lv ${n}`)));
+    }
+  }
+
+  function renderInputs() {
+    renderTarget();
+    renderWanted();
+    renderWeightMode();
+    renderParent();
+    renderTypeMins();
+    for (const picker of Object.values(pickers)) picker.refresh();
+  }
+
+  function scheduleCompute() {
+    clearTimeout(computeTimer);
+    computeTimer = setTimeout(compute, 40);
+  }
+
+  function compute() {
+    lastResult = S.solve(index, {
+      wanted: state.wanted,
+      weightMode: state.weightMode,
+      target: { charaId: state.targetId, awakening: state.targetAwakening, deck: state.targetDeck },
+      parent: { charaId: state.parentId, awakening: state.parentAwakening },
+      typeMin: state.typeMin,
+      notOwned: new Set(state.notOwned),
+      maxDecks: 8,
+      maxParents: 8,
+    });
+    renderResults();
+  }
+
+  function skillChip(id, sub, extraClass) {
+    const skill = index.skillById.get(id);
+    return h(
+      "span",
+      { class: "chip" + (isGold(skill) ? " skill-gold" : "") + (extraClass ? ` ${extraClass}` : "") },
+      h("img", { class: "skill-icon", src: skillImg(skill), alt: "", title: skill.desc || "" }),
+      h("span", { class: "chip-text" }, skill.name, sub ? h("span", { class: "chip-sub" }, sub) : null)
+    );
+  }
+
+  function renderSummary(result) {
+    const summary = $("summary");
+    const blocks = [];
+    if (!state.wanted.length) blocks.push(h("div", { class: "notice info" }, t("results.empty")));
+    if (result.excluded.length) {
+      blocks.push(
+        h(
+          "div",
+          { class: "notice" },
+          h("div", { class: "notice-title" }, t("results.excluded")),
+          h("div", { class: "chip-list" }, result.excluded.map((e) => skillChip(e.id, t(`results.excluded.${e.reason}`), "muted")))
+        )
+      );
+    }
+    if (result.unobtainable.length) {
+      blocks.push(
+        h(
+          "div",
+          { class: "notice warn" },
+          h("div", { class: "notice-title" }, t("results.unobtainable")),
+          h("div", { class: "chip-list" }, result.unobtainable.map((id) => skillChip(id, null, "muted")))
+        )
+      );
+    }
+    summary.replaceChildren(...blocks);
+  }
+
+  function currentParent(result) {
+    const viewed = state.viewParentId && result.parents.find((p) => p.charaId === state.viewParentId);
+    return viewed || result.parents.find((p) => p.charaId === result.selectedParent) || result.parents[0] || null;
+  }
+
+  function renderParents(result, current) {
+    const mount = $("parents");
+    if (!state.wanted.length || !result.effective.length) {
+      mount.replaceChildren();
+      return;
+    }
+    mount.replaceChildren(
+      ...result.parents.map((p) => {
+        const chara = index.charaById.get(p.charaId);
+        return h(
+          "button",
+          {
+            type: "button",
+            class: "parent-card" + (current && current.charaId === p.charaId ? " selected" : ""),
+            onclick: () => {
+              state.viewParentId = p.charaId;
+              saveState();
+              renderResults();
+            },
+          },
+          h("img", { src: charaImg(chara.id), alt: "", loading: "lazy" }),
+          h(
+            "div",
+            { class: "body" },
+            h("div", { class: "name" }, chara.name),
+            h("div", { class: "title" }, chara.title),
+            h("div", { class: "stats" }, h("span", { class: "badge" }, t("parent.covers", { a: p.coveredCount, b: result.effective.length })), h("span", { class: "badge" }, t("parent.cards", { n: p.cardCount }))),
+            p.innate.length ? h("div", { class: "innate", title: t("parent.innate") }, p.innate.map((id) => skillIcon(id, t("deck.fromParent")))) : null
+          )
+        );
+      })
+    );
+  }
+
+  function markNotOwned(cardId) {
+    update(() => {
+      if (!state.notOwned.includes(cardId)) state.notOwned.push(cardId);
+    }, { keepView: true });
+  }
+
+  function renderSlot(slot) {
+    if (slot.kind === "card") {
+      const card = index.cardById.get(slot.id);
+      const altList = h("div", { class: "slot-alt-list", hidden: true }, slot.alts.map((id) => {
+        const alt = index.cardById.get(id);
+        return h("div", { class: "slot-alt" }, h("span", { class: `badge badge-rarity rar-${alt.rar}` }, t(`rarity.${alt.rar}`)), cardLabel(alt));
+      }));
+      return h(
+        "div",
+        { class: `slot slot-card type-${card.type}` + (slot.borrowed ? " borrow" : "") },
+        slot.borrowed
+          ? h("span", { class: "slot-borrow" }, t("deck.borrow"))
+          : h("button", { type: "button", class: "slot-remove", title: t("deck.notOwn"), onclick: () => markNotOwned(card.id) }, "✕"),
+        h("img", { class: "thumb", src: cardImg(card.id), alt: cardLabel(card), loading: "lazy" }),
+        h("div", { class: "slot-name" }, card.chara, h("small", { title: card.title }, card.title)),
+        h("div", { class: "chip-list", style: "justify-content:center;margin:0" }, h("span", { class: `badge badge-rarity rar-${card.rar}` }, t(`rarity.${card.rar}`)), h("span", { class: `badge badge-type type-${card.type}` }, t(`type.short.${card.type}`))),
+        h("div", { class: "slot-skills" }, slot.skills.map((id) => skillIcon(id))),
+        slot.alts.length
+          ? h("button", { type: "button", class: "slot-alts", title: t("deck.alts", { n: slot.alts.length }), onclick: () => {
+            altList.hidden = !altList.hidden;
+          } }, `+${slot.alts.length}`)
+          : null,
+        altList
+      );
+    }
+    if (slot.kind === "type") {
+      return h("div", { class: `slot slot-type type-${slot.type}` }, h("div", { class: "type-circle" }, t(`type.short.${slot.type}`)), h("div", null, t("deck.anyType", { type: t(`type.${slot.type}`) })));
+    }
+    return h("div", { class: "slot slot-free" }, h("div", { class: "free-mark" }, "+"), h("div", null, t("deck.free")));
+  }
+
+  function renderDeck(deck, rank, result) {
+    const covered = deck.covered.map((c) => {
+      const skill = index.skillById.get(c.id);
+      const note = c.from === "parent" ? t("deck.fromParent") : c.cards.map((id) => index.cardById.get(id).chara).join(", ");
+      return h("div", { class: "skill-row" }, skillIcon(c.id), skillNameNode(skill), h("span", { class: "note" }, note));
+    });
+    const missing = deck.missing.map((m) => {
+      const skill = index.skillById.get(m.id);
+      return h("div", { class: "skill-row missing" }, skillIcon(m.id), skillNameNode(skill), h("span", { class: "note" }, t(`deck.missing.${m.reason}`)));
+    });
+    return h(
+      "div",
+      { class: "deck" },
+      h(
+        "div",
+        { class: "deck-head" },
+        h("span", { class: "deck-rank" }, t("deck.rank", { n: rank })),
+        h("span", { class: "badge" }, t("deck.covers", { a: deck.coveredCount, b: result.effective.length })),
+        h("span", { class: "badge" }, t("deck.cards", { n: deck.cardCount })),
+        deck.borrowed ? h("span", { class: "badge badge-gold" }, t("deck.borrow")) : null
+      ),
+      h("div", { class: "slots" }, deck.slots.map(renderSlot)),
+      h(
+        "div",
+        { class: "deck-skills" },
+        h("div", null, h("h4", null, t("deck.covered")), covered.length ? covered : h("div", { class: "skill-row missing" }, "—")),
+        h("div", null, h("h4", null, t("deck.missing")), missing.length ? missing : h("div", { class: "skill-row missing" }, "—"))
+      )
+    );
+  }
+
+  function renderDecks(result, current) {
+    const mount = $("decks");
+    const title = $("decks-title");
+    if (!current || !state.wanted.length || !result.effective.length) {
+      title.textContent = t("results.decks", { name: "—" });
+      mount.replaceChildren(state.wanted.length && !result.effective.length ? h("div", { class: "notice info" }, t("results.excluded")) : null);
+      return;
+    }
+    const chara = index.charaById.get(current.charaId);
+    title.textContent = t("results.decks", { name: `${chara.name} ${chara.title}` });
+    const blocks = current.decks.map((deck, i) => renderDeck(deck, i + 1, result));
+    if (!current.complete) blocks.unshift(h("div", { class: "notice warn" }, t("results.incomplete")));
+    mount.replaceChildren(...blocks);
+  }
+
+  function renderNotOwned() {
+    const mount = $("not-owned");
+    if (!state.notOwned.length) {
+      mount.replaceChildren(h("span", { class: "hint" }, t("notOwned.empty")));
+      return;
+    }
+    mount.replaceChildren(
+      ...state.notOwned.map((id) => {
+        const card = index.cardById.get(id);
+        return h(
+          "span",
+          { class: `chip type-${card.type}` },
+          h("img", { src: cardImg(card.id), alt: "" }),
+          h("span", { class: "chip-text" }, card.chara, h("span", { class: "chip-sub" }, `${card.title} · ${t(`rarity.${card.rar}`)}`)),
+          h("button", { type: "button", class: "icon-btn", title: t("notOwned.restore"), onclick: () => update(() => {
+            state.notOwned = state.notOwned.filter((x) => x !== id);
+          }, { keepView: true }) }, "↩")
+        );
+      })
+    );
+  }
+
+  function renderResults() {
+    if (!lastResult) return;
+    const current = currentParent(lastResult);
+    renderSummary(lastResult);
+    renderParents(lastResult, current);
+    renderDecks(lastResult, current);
+    renderNotOwned();
+  }
+
+  function showToast(text) {
+    const toast = $("toast");
+    toast.textContent = text;
+    toast.hidden = false;
+    clearTimeout(showToast.timer);
+    showToast.timer = setTimeout(() => {
+      toast.hidden = true;
+    }, 1800);
+  }
+
+  function shareLink() {
+    const url = `${location.origin}${location.pathname}#s=${encodeState(state)}`;
+    const done = () => showToast(t("action.shared"));
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(done, () => prompt("URL", url));
+    else prompt("URL", url);
+  }
+
+  function resetInputs() {
+    if (!confirm(t("action.resetConfirm"))) return;
+    const keep = { lang: state.lang, notOwned: state.notOwned };
+    state = Object.assign(defaultState(), keep);
+    saveState();
+    renderInputs();
+    scheduleCompute();
+  }
+
+  function setLanguage(lang) {
+    state.lang = lang;
+    I.setLanguage(lang);
+    saveState();
+    I.applyStatic();
+    for (const btn of document.querySelectorAll("#lang-switch [data-lang]")) btn.classList.toggle("active", btn.dataset.lang === lang);
+    renderInputs();
+    renderResults();
+  }
+
+  function init() {
+    I.setLanguage(state.lang);
+    I.applyStatic();
+    renderAwakeningSelects();
+    buildTypeMins();
+    buildPickers();
+    $("target-awakening").addEventListener("change", (e) => update(() => {
+      state.targetAwakening = clampInt(e.target.value, 1, 5, 5);
+    }));
+    $("parent-awakening").addEventListener("change", (e) => update(() => {
+      state.parentAwakening = clampInt(e.target.value, 1, 5, 5);
+    }));
+    $("btn-share").addEventListener("click", shareLink);
+    $("btn-reset").addEventListener("click", resetInputs);
+    $("btn-clear-not-owned").addEventListener("click", () => update(() => {
+      state.notOwned = [];
+    }, { keepView: true }));
+    for (const btn of document.querySelectorAll("#lang-switch [data-lang]")) {
+      btn.classList.toggle("active", btn.dataset.lang === state.lang);
+      btn.addEventListener("click", () => setLanguage(btn.dataset.lang));
+    }
+    $("footer-generated").textContent = t("footer.generated", { date: data.generated });
+    renderInputs();
+    compute();
+  }
+
+  init();
+})();
