@@ -311,6 +311,12 @@ img.via-scenario {
   padding: 2px 4px;
 }
 
+.slot-choice.scenario {
+  color: #4cc9f0;
+  background: rgba(76, 201, 240, 0.08);
+  border-color: rgba(76, 201, 240, 0.5);
+}
+
 .type-dot {
   display: inline-block;
   width: 10px;

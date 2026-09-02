@@ -205,8 +205,12 @@
   function howText(origin, scenarioId) {
     if (!origin) return scenarioName(scenarioId);
     const teammate = origin.teammate ? charaByCharaId(origin.teammate) : null;
-    const text = t(`scenario.how.${origin.how}`, { name: teammate ? teammate.name : "" });
-    return origin.note ? `${text} (${origin.note})` : text;
+    const card = origin.card ? index.cardById.get(origin.card) : null;
+    let text = t(`scenario.how.${origin.how}`, { name: teammate ? teammate.name : "" });
+    if (origin.option) text += `: ${origin.option}`;
+    if (origin.note) text += ` (${origin.note})`;
+    if (card) text += ` · ${t("scenario.viaCard", { card: card.chara })}`;
+    return text;
   }
 
   function skillIcon(id, extraTitle, extraClass) {
@@ -895,10 +899,23 @@
         h("img", { class: "thumb", src: cardImg(card.id), alt: cardLabel(card), loading: "lazy" }),
         h("div", { class: "slot-name" }, card.chara, h("small", { title: card.title }, card.title)),
         h("div", { class: "chip-list", style: "justify-content:center;margin:0" }, h("span", { class: `badge badge-rarity rar-${card.rar}` }, t(`rarity.${card.rar}`)), h("span", { class: `badge badge-type type-${card.type}` }, t(`type.short.${card.type}`))),
-        slot.choices.length
-          ? h("div", { class: "slot-choices" }, slot.choices.map((choice) => h("div", { class: "slot-choice", title: choice.option }, t("deck.eventChoice", { event: choice.name, n: choice.optionIndex + 1 }))))
+        slot.choices.length || slot.links.length
+          ? h(
+              "div",
+              { class: "slot-choices" },
+              slot.choices.map((choice) => h("div", { class: "slot-choice", title: choice.option }, t("deck.eventChoice", { event: choice.name, n: choice.optionIndex + 1 }))),
+              slot.links.map((link) => h("div", { class: "slot-choice scenario", title: howText({ how: link.how, option: link.option }, link.scenario) }, t("deck.linkChoice", { scenario: scenarioName(link.scenario), option: link.option })))
+            )
           : null,
-        h("div", { class: "slot-skills" }, slot.skills.map((id) => skillIcon(id, slot.eventSkills.includes(id) ? t("deck.viaEvent") : null, slot.eventSkills.includes(id) ? "via-event" : null))),
+        h(
+          "div",
+          { class: "slot-skills" },
+          slot.skills.map((id) => {
+            if (slot.linkSkills.includes(id)) return skillIcon(id, scenarioName(slot.links[0].scenario), "via-scenario");
+            if (slot.eventSkills.includes(id)) return skillIcon(id, t("deck.viaEvent"), "via-event");
+            return skillIcon(id);
+          })
+        ),
         slot.alts.length
           ? h("button", { type: "button", class: "slot-alts", title: t("deck.alts", { n: slot.alts.length }), onclick: () => {
             altList.hidden = !altList.hidden;
@@ -937,7 +954,10 @@
         h("span", { class: "deck-rank" }, t("deck.rank", { n: rank })),
         h("span", { class: "badge" }, t("deck.covers", { a: deck.coveredCount, b: result.effective.length })),
         h("span", { class: "badge" }, t("deck.cards", { n: deck.cardCount })),
-        deck.borrowed ? h("span", { class: "badge badge-gold" }, t("deck.borrow")) : null
+        deck.borrowed ? h("span", { class: "badge badge-gold" }, t("deck.borrow")) : null,
+        deck.scenario
+          ? h("span", { class: "badge badge-scenario", title: deck.scenarioChoices.map((c) => `${c.option}: ${c.skills.map((id) => index.skillById.get(id).name).join(", ")}`).join("\n") }, t("parent.trainIn", { name: scenarioName(deck.scenario) }))
+          : null
       ),
       h("div", { class: "slots" }, deck.slots.map(renderSlot)),
       h(

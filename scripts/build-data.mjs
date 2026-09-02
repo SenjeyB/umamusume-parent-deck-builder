@@ -37,11 +37,11 @@ const SCENARIOS = [
       {
         how: "teamName",
         options: [
-          { skills: [200491] },
-          { skills: [200681], link: 1010, requireLink: true },
-          { skills: [201121], link: 1056, requireLink: true },
-          { skills: [200471], link: 1052, requireLink: true },
-          { skills: [200741], link: 1030, requireLink: true },
+          { name: "Team Carrot", skills: [200491] },
+          { name: "Happy Hoppers", skills: [200681], link: 1010, requireLink: true },
+          { name: "Sunny Runners", skills: [201121], link: 1056, requireLink: true },
+          { name: "Carrot Pudding", skills: [200471], link: 1052, requireLink: true },
+          { name: "Blue Bloom", skills: [200741], link: 1030, requireLink: true },
         ],
       },
     ],
@@ -282,7 +282,7 @@ function buildScenarios(skillById) {
         how: g.how,
         note: g.note || "",
         skills: (g.skills || []).filter((id) => skillById.has(id)),
-        options: (g.options || []).map((o) => ({ skills: o.skills.filter((id) => skillById.has(id)), link: o.link || 0, requireLink: Boolean(o.requireLink), fallback: (o.fallback || []).filter((id) => skillById.has(id)) })).filter((o) => o.skills.length),
+        options: (g.options || []).map((o) => ({ name: o.name || "", skills: o.skills.filter((id) => skillById.has(id)), link: o.link || 0, requireLink: Boolean(o.requireLink), fallback: (o.fallback || []).filter((id) => skillById.has(id)) })).filter((o) => o.skills.length),
       }))
       .filter((g) => g.skills.length || g.options.length),
   }));
