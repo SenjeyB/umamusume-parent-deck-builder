@@ -209,12 +209,12 @@
     for (const event of owner.events || []) {
       const secret = event.g === "secret";
       if (secret && skipSecret) continue;
-      if (event.o.length === 1) {
+      if ((event.c || event.o.length) <= 1) {
         for (const id of expandDown(index, event.o[0].s)) {
           free.push(id);
           if (!origins.has(id)) origins.set(id, { event: event.n, secret });
         }
-      } else groups.push({ owner: label, name: event.n, secret, options: event.o.map((option) => ({ text: option.t, set: expandDown(index, option.s) })) });
+      } else groups.push({ owner: label, name: event.n, secret, options: event.o.map((option, i) => ({ text: option.t, set: expandDown(index, option.s), index: option.n ? option.n - 1 : i })) });
     }
     return { free, groups, origins };
   }
@@ -223,7 +223,7 @@
     const events = splitEvents(index, chara, label, skipSecret);
     const innate = expandDown(index, charaSkillIds(chara, awakening));
     const origins = new Map();
-    for (const [id, origin] of events.origins) if (!innate.has(id)) origins.set(id, origin);
+    for (const [id, origin] of events.origins) if (origin.secret && !innate.has(id)) origins.set(id, origin);
     return { free: expandDown(index, [...innate].concat(events.free)), innate, groups: events.groups, origins };
   }
 
@@ -322,7 +322,8 @@
       });
       if (best) {
         mask = Mask.or(mask, best.mask);
-        picks.push({ owner: group.owner, name: group.name, how: group.how, option: group.options[best.optionIndex].text, optionIndex: best.optionIndex, ids: Mask.indexes(best.mask) });
+        const chosen = group.options[best.optionIndex];
+        picks.push({ owner: group.owner, name: group.name, how: group.how, option: chosen.text, optionIndex: chosen.index !== undefined ? chosen.index : best.optionIndex, ids: Mask.indexes(best.mask) });
       }
     }
     return { mask, picks };
@@ -336,7 +337,7 @@
       .map((group) => ({
         group,
         options: group.options
-          .map((option, i) => ({ i, text: option.text, mask: Mask.and(setMask(inheritableOnly(index, option.set), position, words), remainingMask) }))
+          .map((option, i) => ({ i: option.index !== undefined ? option.index : i, text: option.text, mask: Mask.and(setMask(inheritableOnly(index, option.set), position, words), remainingMask) }))
           .filter((o) => !Mask.isZero(o.mask)),
       }))
       .filter((g) => g.options.length);
@@ -904,7 +905,8 @@
           const group = sources.groups.find((g) => g.name === pick.name);
           for (const i of pick.ids) origins.set(effective[i], { event: pick.name, secret: Boolean(group && group.secret), option: pick.option, optionIndex: pick.optionIndex });
         }
-        return { ownMask, eventMask: Mask.andNot(ownMask, innateMask), picks: picks.picks, origins, baseMask: Mask.or(ownMask, grandMask), baseCands: null };
+        const secretMask = Mask.andNot(setMask(new Set(sources.origins.keys()), position, words), innateMask);
+        return { ownMask, eventMask: Mask.or(picks.mask, secretMask), picks: picks.picks, origins, baseMask: Mask.or(ownMask, grandMask), baseCands: null };
       };
       const full = variant(false);
       let noSecret = (chara.events || []).some((e) => e.g === "secret") ? variant(true) : full;

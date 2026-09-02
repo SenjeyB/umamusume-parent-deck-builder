@@ -431,16 +431,16 @@ function parseEvents(eventData, skillById) {
     for (const e of list) {
       if (!e || typeof e !== "object" || !Array.isArray(e.c)) continue;
       const options = [];
-      for (const choice of e.c) {
+      e.c.forEach((choice, position) => {
         const ids = [];
-        for (const reward of choice.r || []) {
+        for (const reward of (choice && choice.r) || []) {
           const id = Number(reward && reward.t === "sk" ? reward.d : NaN);
           if (skillById.has(id) && !ids.includes(id)) ids.push(id);
         }
-        if (ids.length) options.push({ t: String(choice.o || ""), s: ids });
-      }
+        if (ids.length) options.push({ t: String((choice && choice.o) || ""), n: position + 1, s: ids });
+      });
       if (!options.length) continue;
-      events.push({ n: englishNames.get(e.i) || String(e.n || ""), g: group, o: options });
+      events.push({ n: englishNames.get(e.i) || String(e.n || ""), g: group, c: e.c.length, o: options });
     }
   }
   return events;
