@@ -202,19 +202,29 @@
     return ids;
   }
 
-  function splitEvents(index, owner, label) {
+  function splitEvents(index, owner, label, skipSecret) {
     const free = [];
     const groups = [];
+    const origins = new Map();
     for (const event of owner.events || []) {
-      if (event.o.length === 1) free.push(...event.o[0].s);
-      else groups.push({ owner: label, name: event.n, options: event.o.map((option) => ({ text: option.t, set: expandDown(index, option.s) })) });
+      const secret = event.g === "secret";
+      if (secret && skipSecret) continue;
+      if (event.o.length === 1) {
+        for (const id of expandDown(index, event.o[0].s)) {
+          free.push(id);
+          if (!origins.has(id)) origins.set(id, { event: event.n, secret });
+        }
+      } else groups.push({ owner: label, name: event.n, secret, options: event.o.map((option) => ({ text: option.t, set: expandDown(index, option.s) })) });
     }
-    return { free, groups };
+    return { free, groups, origins };
   }
 
-  function charaSources(index, chara, awakening, label) {
-    const events = splitEvents(index, chara, label);
-    return { free: expandDown(index, charaSkillIds(chara, awakening).concat(events.free)), groups: events.groups };
+  function charaSources(index, chara, awakening, label, skipSecret) {
+    const events = splitEvents(index, chara, label, skipSecret);
+    const innate = expandDown(index, charaSkillIds(chara, awakening));
+    const origins = new Map();
+    for (const [id, origin] of events.origins) if (!innate.has(id)) origins.set(id, origin);
+    return { free: expandDown(index, [...innate].concat(events.free)), innate, groups: events.groups, origins };
   }
 
   function cardSources(index, card, label) {
@@ -711,7 +721,7 @@
     const missing = [];
     for (let i = 0; i < ctx.effective.length; i++) {
       const id = ctx.effective[i];
-      if (Mask.has(ctx.ownMask, i)) covered.push({ id, from: "parent", viaEvent: Mask.has(ctx.parentEventMask, i) });
+      if (Mask.has(ctx.ownMask, i)) covered.push(Object.assign({ id, from: "parent", viaEvent: Mask.has(ctx.parentEventMask, i) }, ctx.parentOrigins.get(id) || {}));
       else if (Mask.has(ctx.scenarioMask, i)) covered.push({ id, from: "scenario", scenario: scenarioId, origin: ctx.scenarioOrigin.get(id) || null });
       else if (Mask.has(ctx.parentMask, i)) covered.push({ id, from: "grandparent", grandparent: ctx.grandBy.get(i) });
       else if (Mask.has(state.covered, i)) {
@@ -724,6 +734,7 @@
           covered.push({ id, from: "scenario", scenario: scenarioId, origin: source ? { how: source.how, link: source.link, option: source.text, card: linker ? linker.id : 0 } : null });
         }
       } else if (ctx.cardSources.has(id)) missing.push({ id, reason: "limit" });
+      else if (Mask.has(ctx.secretMask, i)) missing.push({ id, reason: "secret" });
       else if (ctx.parentSources.has(id)) missing.push({ id, reason: "nocard" });
       else if (ctx.scenarioSources.has(id)) missing.push({ id, reason: "scenario", via: ctx.scenarioSources.get(id) });
       else if (ctx.charaSources.has(id)) missing.push({ id, reason: "grandparent", via: ctx.grandSources(id) });
@@ -780,8 +791,8 @@
     if (targetChara) {
       const innate = expandDown(index, charaSkillIds(targetChara, target.awakening || 5));
       for (const id of innate) traineeReason.set(id, { reason: "target" });
-      const events = splitEvents(index, targetChara, "target");
-      for (const id of expandDown(index, events.free)) if (!traineeReason.has(id)) traineeReason.set(id, { reason: "targetEvent" });
+      const events = splitEvents(index, targetChara, "target", Boolean(traineeScenario && traineeScenario.id === "trackblazer"));
+      for (const id of expandDown(index, events.free)) if (!traineeReason.has(id)) traineeReason.set(id, Object.assign({ reason: "targetEvent" }, events.origins.get(id) || {}));
       traineeGroups.push(...events.groups);
     }
     for (const cardId of target.deck || []) {
@@ -808,8 +819,9 @@
       const card = group ? group.card : undefined;
       const skills = pick.ids.map((i) => preliminary[i]);
       const reason = pick.owner === "deck" ? "deckChoice" : pick.owner === "scenario" ? "scenarioChoice" : "targetChoice";
-      for (const id of skills) traineeReason.set(id, Object.assign({ reason, card, event: pick.name, option: pick.option, optionIndex: pick.optionIndex, scenario: group ? group.scenario : undefined }, group && group.origin ? group.origin.get(id) || {} : {}));
-      traineeChoices.push({ owner: pick.owner, card, scenario: group ? group.scenario : undefined, name: pick.name, how: pick.how, option: pick.option, optionIndex: pick.optionIndex, skills });
+      const secret = Boolean(group && group.secret);
+      for (const id of skills) traineeReason.set(id, Object.assign({ reason, card, event: pick.name, option: pick.option, optionIndex: pick.optionIndex, secret, scenario: group ? group.scenario : undefined }, group && group.origin ? group.origin.get(id) || {} : {}));
+      traineeChoices.push({ owner: pick.owner, card, scenario: group ? group.scenario : undefined, name: pick.name, how: pick.how, option: pick.option, optionIndex: pick.optionIndex, secret, skills });
     }
 
     const excluded = [];
@@ -881,13 +893,28 @@
     };
     const scenarioPool = parentScenarioChoice === "auto" || !parentScenarioPool.length ? [null].concat(parentScenarioPool) : parentScenarioPool;
     const parents = eligible.map((chara) => {
-      const sources = charaSources(index, chara, parentAwakening, "parent");
-      const freeMask = setMask(inheritableOnly(index, sources.free), position, words);
-      const picks = resolveGroups(sources.groups, position, weights, Mask.or(freeMask, grandMask), inh);
-      const ownMask = Mask.or(freeMask, picks.mask);
-      const baseMask = Mask.or(ownMask, grandMask);
-      const baseCands = buildCandidates(index, position, weights, Mask.andNot(fullMask, baseMask), notOwned, chara.charaId);
+      const variant = (skipSecret) => {
+        const sources = charaSources(index, chara, parentAwakening, "parent", skipSecret);
+        const innateMask = setMask(inheritableOnly(index, sources.innate), position, words);
+        const freeMask = setMask(inheritableOnly(index, sources.free), position, words);
+        const picks = resolveGroups(sources.groups, position, weights, Mask.or(freeMask, grandMask), inh);
+        const ownMask = Mask.or(freeMask, picks.mask);
+        const origins = new Map(sources.origins);
+        for (const pick of picks.picks) {
+          const group = sources.groups.find((g) => g.name === pick.name);
+          for (const i of pick.ids) origins.set(effective[i], { event: pick.name, secret: Boolean(group && group.secret), option: pick.option, optionIndex: pick.optionIndex });
+        }
+        return { ownMask, eventMask: Mask.andNot(ownMask, innateMask), picks: picks.picks, origins, baseMask: Mask.or(ownMask, grandMask), baseCands: null };
+      };
+      const full = variant(false);
+      let noSecret = (chara.events || []).some((e) => e.g === "secret") ? variant(true) : full;
+      if (noSecret !== full && Mask.equals(noSecret.ownMask, full.ownMask)) noSecret = full;
+      const candsFor = (own) => {
+        if (!own.baseCands) own.baseCands = buildCandidates(index, position, weights, Mask.andNot(fullMask, own.baseMask), notOwned, chara.charaId);
+        return own.baseCands;
+      };
       const evaluate = (sc) => {
+        const own = sc && sc.id === "trackblazer" ? noSecret : full;
         let scenarioMask = Mask.empty(words);
         let scenarioPicks = [];
         let scenarioOrigin = new Map();
@@ -895,18 +922,18 @@
         if (sc) {
           const scSources = scenarioSources(index, sc, chara.charaId, [], true);
           const scFree = setMask(inheritableOnly(index, scSources.free), position, words);
-          const scPicks = resolveGroups(scSources.groups.filter((g) => !g.links.length), position, weights, Mask.or(baseMask, scFree), inh);
-          scenarioMask = Mask.andNot(Mask.or(scFree, scPicks.mask), baseMask);
+          const scPicks = resolveGroups(scSources.groups.filter((g) => !g.links.length), position, weights, Mask.or(own.baseMask, scFree), inh);
+          scenarioMask = Mask.andNot(Mask.or(scFree, scPicks.mask), own.baseMask);
           scenarioPicks = scPicks.picks;
           scenarioOrigin = scSources.origin;
           deckGroups = scSources.groups.filter((g) => g.links.length);
         }
-        const parentMask = Mask.or(baseMask, scenarioMask);
+        const parentMask = Mask.or(own.baseMask, scenarioMask);
         const remaining = Mask.andNot(fullMask, parentMask);
-        const built = assemble(chara, restrictCandidates(baseCands, scenarioMask, weights), deckGroups, remaining);
+        const built = assemble(chara, restrictCandidates(candsFor(own), scenarioMask, weights), deckGroups, remaining);
         if (sc && parentScenarioChoice === "auto" && Mask.isZero(scenarioMask) && !built.extra.length) return null;
         const parentScore = Mask.weight(parentMask, weights);
-        return { scenario: sc, scenarioMask, scenarioPicks, scenarioOrigin, deckGroups, parentMask, parentScore, remaining, cands: built.cands, seed: built.seed, estimate: parentScore + built.seed.score, estimateCards: built.seed.count, estimateBorrow: built.seed.borrowed };
+        return { scenario: sc, own, scenarioMask, scenarioPicks, scenarioOrigin, deckGroups, parentMask, parentScore, remaining, cands: built.cands, seed: built.seed, estimate: parentScore + built.seed.score, estimateCards: built.seed.count, estimateBorrow: built.seed.borrowed };
       };
       const better = (a, b) => a.estimate > b.estimate || (a.estimate === b.estimate && (a.estimateCards < b.estimateCards || (a.estimateCards === b.estimateCards && !a.estimateBorrow && b.estimateBorrow)));
       let plan = null;
@@ -914,7 +941,7 @@
         const candidate = evaluate(sc);
         if (candidate && (!plan || better(candidate, plan))) plan = candidate;
       }
-      return Object.assign({ chara, ownMask, parentEventMask: picks.mask, parentPicks: picks.picks, exact: null }, plan);
+      return Object.assign({ chara, ownMask: plan.own.ownMask, parentEventMask: plan.own.eventMask, parentPicks: plan.own.picks, parentOrigins: plan.own.origins, secretMask: Mask.andNot(full.ownMask, plan.own.ownMask), exact: null }, plan);
     });
 
     parents.sort((a, b) => b.estimate - a.estimate || a.estimateCards - b.estimateCards || Mask.popcount(b.parentMask) - Mask.popcount(a.parentMask) || a.chara.id - b.chara.id);
@@ -936,6 +963,8 @@
         scenario: p.scenario,
         scenarioOrigin: p.scenarioOrigin,
         parentEventMask: p.parentEventMask,
+        parentOrigins: p.parentOrigins,
+        secretMask: p.secretMask,
         grandBy,
         parentScore: p.parentScore,
         cardSources: cardSourceSet,
@@ -960,6 +989,8 @@
         total: p.total,
         innate: Mask.indexes(Mask.andNot(p.ownMask, p.parentEventMask)).map((i) => effective[i]),
         viaEvents: Mask.indexes(p.parentEventMask).map((i) => effective[i]),
+        events: Mask.indexes(p.parentEventMask).map((i) => Object.assign({ id: effective[i] }, p.parentOrigins.get(effective[i]) || {})),
+        secretLost: Mask.indexes(p.secretMask).map((i) => effective[i]),
         viaGrand: Mask.indexes(Mask.andNot(Mask.andNot(p.parentMask, p.ownMask), p.scenarioMask)).map((i) => effective[i]),
         viaScenario: viaScenario.map((c) => c.id),
         scenario: p.scenario && viaScenario.length

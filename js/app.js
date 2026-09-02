@@ -202,6 +202,11 @@
     return parts.join(" · ");
   }
 
+  function parentEventText(entry) {
+    if (!entry.event) return t("deck.fromParentEvent");
+    return t(entry.secret ? "deck.fromParentSecret" : "deck.fromParentEventNamed", { event: entry.event });
+  }
+
   function howText(origin, scenarioId) {
     if (!origin) return scenarioName(scenarioId);
     const teammate = origin.teammate ? charaByCharaId(origin.teammate) : null;
@@ -526,6 +531,7 @@
   function excludedText(entry) {
     const card = entry.card ? index.cardById.get(entry.card) : null;
     const params = { card: card ? card.chara : "", event: entry.event || "", n: (entry.optionIndex || 0) + 1, scenario: scenarioName(entry.scenario), how: entry.how ? howText(entry, entry.scenario) : "" };
+    if (entry.reason === "targetEvent" && entry.event) return t(entry.secret ? "results.excluded.targetSecret" : "results.excluded.targetEventNamed", params);
     if (entry.reason === "fallbackCovered") params.name = index.skillById.get(entry.white) ? index.skillById.get(entry.white).name : "";
     if (entry.reason === "duplicate") params.name = index.skillById.get(entry.mergedWith) ? index.skillById.get(entry.mergedWith).name : "";
     return t(`results.excluded.${entry.reason}`, params);
@@ -757,7 +763,7 @@
       image = owner ? h("img", { class: "choice-img", src: charaImg(owner.id), alt: "" }) : h("div", { class: "choice-img choice-mark" }, "?");
       source = owner ? charaLabel(owner) : "";
     }
-    const event = pick.how ? howText({ how: pick.how }, pick.scenario) : t("results.choiceEvent", { event: pick.name });
+    const event = pick.how ? howText({ how: pick.how }, pick.scenario) : t(pick.secret ? "results.choiceSecretEvent" : "results.choiceEvent", { event: pick.name });
     const number = pick.how ? null : h("span", { class: "choice-num" }, t("results.choiceOption", { n: (pick.optionIndex || 0) + 1 }));
     return h(
       "div",
@@ -883,7 +889,7 @@
                   "div",
                   { class: "innate", title: choiceTitle || t("parent.innate") },
                   p.innate.map((id) => skillIcon(id, t("deck.fromParent"))),
-                  p.viaEvents.map((id) => skillIcon(id, t("deck.fromParentEvent"), "via-event")),
+                  p.events.map((e) => skillIcon(e.id, parentEventText(e), e.secret ? "via-secret" : "via-event")),
                   p.viaScenario.map((id) => skillIcon(id, p.scenario ? p.scenario.name : "", "via-scenario")),
                   p.viaGrand.map((id) => skillIcon(id, t("deck.fromGrandShort"), "via-grand"))
                 )
@@ -965,7 +971,7 @@
     const covered = deck.covered.map((c) => {
       const skill = index.skillById.get(c.id);
       let note;
-      if (c.from === "parent") note = c.viaEvent ? t("deck.fromParentEvent") : t("deck.fromParent");
+      if (c.from === "parent") note = c.viaEvent ? parentEventText(c) : t("deck.fromParent");
       else if (c.from === "scenario") note = t("deck.fromScenario", { scenario: scenarioName(c.scenario), how: howText(c.origin, c.scenario) });
       else if (c.from === "grandparent") note = t("deck.fromGrand", { name: c.grandparent ? charaLabel(index.charaById.get(c.grandparent)) : "" });
       else note = c.cards.map((id) => index.cardById.get(id).chara).join(", ") + (c.viaEvent ? ` (${t("deck.viaEvent")})` : "");
