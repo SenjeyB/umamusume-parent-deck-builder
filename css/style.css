@@ -255,29 +255,111 @@ img.via-scenario {
   max-width: 190px;
 }
 
-.grand-rows {
+.choice-rows {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-top: 8px;
+  gap: 8px;
 }
 
-.grand-row {
+.choice-row {
+  display: grid;
+  grid-template-columns: 48px 1fr;
+  gap: 12px;
+  align-items: start;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.choice-img {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: var(--bg-input);
+}
+
+.choice-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #4cc9f0;
+  border: 1px dashed #4cc9f0;
+}
+
+.choice-source {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.choice-event {
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-top: 1px;
+}
+
+.choice-pick {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  margin-top: 5px;
+}
+
+.choice-num {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(255, 184, 77, 0.14);
+  border: 1px solid rgba(255, 184, 77, 0.55);
+  color: #ffb84d;
+  font-weight: 700;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.choice-text {
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.choice-text.jp {
+  font-weight: 400;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.choice-skills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 7px;
   font-size: 0.85rem;
 }
 
-.grand-row img {
+.choice-skills span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.choice-skills img {
   width: 22px;
   height: 22px;
 }
 
-.grand-row .note {
+.notice-hint {
   color: var(--text-muted);
-  font-size: 0.78rem;
+  font-size: 0.8rem;
+  margin: -4px 0 10px;
+}
+
+.deck-actions {
+  margin-top: 8px;
 }
 
 .slot-alt-head {
@@ -773,12 +855,6 @@ input:focus {
   flex-wrap: wrap;
 }
 
-.notice-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 10px;
-}
-
 .parent-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
@@ -1116,6 +1192,12 @@ input:focus {
 
 .skill-row.missing {
   opacity: 0.75;
+  flex-wrap: wrap;
+}
+
+.skill-row.missing .btn-small {
+  padding: 1px 7px;
+  font-size: 0.7rem;
 }
 
 .row-end {

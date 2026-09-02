@@ -737,6 +737,43 @@
     );
   }
 
+  function scenarioAbbr(id) {
+    const words = scenarioName(id).split(" ").filter(Boolean);
+    if (words.length > 1 && /^[A-Z]+$/.test(words[0])) return words[0];
+    return words.map((w) => w[0]).join("").toUpperCase();
+  }
+
+  function renderChoiceRow(pick, owner) {
+    const card = pick.card ? index.cardById.get(pick.card) : null;
+    let image;
+    let source;
+    if (card) {
+      image = h("img", { class: "choice-img", src: cardImg(card.id), alt: "" });
+      source = `${card.chara} ${card.title} · ${t(`rarity.${card.rar}`)} · ${t(`type.${card.type}`)}`;
+    } else if (pick.how) {
+      image = h("div", { class: "choice-img choice-mark" }, scenarioAbbr(pick.scenario));
+      source = scenarioName(pick.scenario);
+    } else {
+      image = owner ? h("img", { class: "choice-img", src: charaImg(owner.id), alt: "" }) : h("div", { class: "choice-img choice-mark" }, "?");
+      source = owner ? charaLabel(owner) : "";
+    }
+    const event = pick.how ? howText({ how: pick.how }, pick.scenario) : t("results.choiceEvent", { event: pick.name });
+    const number = pick.how ? null : h("span", { class: "choice-num" }, t("results.choiceOption", { n: (pick.optionIndex || 0) + 1 }));
+    return h(
+      "div",
+      { class: "choice-row" },
+      image,
+      h(
+        "div",
+        { class: "choice-body" },
+        h("div", { class: "choice-source" }, source),
+        h("div", { class: "choice-event" }, event),
+        h("div", { class: "choice-pick" }, number, pick.how ? h("span", { class: "choice-text" }, pick.option) : pick.option ? h("span", { class: "choice-text jp", lang: "ja", title: t("results.choiceJp") }, pick.option) : null),
+        h("div", { class: "choice-skills" }, pick.skills.map((id) => h("span", null, skillIcon(id), index.skillById.get(id).name)))
+      )
+    );
+  }
+
   function renderSummary(result) {
     const summary = $("summary");
     const blocks = [];
@@ -767,20 +804,14 @@
       );
     }
     if (result.traineeChoices.length) {
+      const trainee = index.charaById.get(state.targetId) || null;
       blocks.push(
         h(
           "div",
           { class: "notice info" },
           h("div", { class: "notice-title" }, t("results.traineeChoices")),
-          h(
-            "div",
-            { class: "chip-list" },
-            result.traineeChoices.map((pick) => {
-              const card = pick.card ? index.cardById.get(pick.card) : null;
-              const label = pick.owner === "scenario" ? `${scenarioName(pick.scenario)}: ${howText({ how: pick.how }, pick.scenario)}` : (card ? `${card.chara}: ` : "") + t("results.choice", { event: pick.name, n: pick.optionIndex + 1 });
-              return h("span", { class: "chip", title: pick.option }, h("span", { class: "chip-text" }, label, h("span", { class: "chip-sub" }, pick.skills.map((id) => index.skillById.get(id).name).join(", "))));
-            })
-          )
+          h("div", { class: "notice-hint" }, t("results.traineeChoicesHint")),
+          h("div", { class: "choice-rows" }, result.traineeChoices.map((pick) => renderChoiceRow(pick, trainee)))
         )
       );
     }
@@ -930,7 +961,7 @@
     return h("div", { class: "slot slot-free" }, h("div", { class: "free-mark" }, "+"), h("div", null, t("deck.free")));
   }
 
-  function renderDeck(deck, rank, result) {
+  function renderDeck(deck, rank, result, parent) {
     const covered = deck.covered.map((c) => {
       const skill = index.skillById.get(c.id);
       let note;
@@ -942,9 +973,24 @@
     });
     const missing = deck.missing.map((m) => {
       const skill = index.skillById.get(m.id);
-      const note = m.reason === "scenario" ? t("deck.missing.scenario", { names: scenarioNames(m.via || []) }) : t(`deck.missing.${m.reason}`);
-      return h("div", { class: "skill-row missing" }, skillIcon(m.id), skillNameNode(skill), h("span", { class: "note" }, note));
+      let note;
+      let actions = null;
+      if (m.reason === "scenario") {
+        const ids = (m.via || []).filter((id) => scenarioById(id));
+        note = t("deck.missing.scenario", { names: scenarioNames(ids) });
+        actions = ids.filter((id) => state.parentScenario !== id).map((id) => h("button", { type: "button", class: "btn btn-ghost btn-small", onclick: () => update(() => {
+          state.parentScenario = id;
+        }) }, t("results.trainIn", { name: scenarioName(id) })));
+      } else if (m.reason === "grandparent") {
+        const via = (m.via || []).slice(0, 4).map((id) => index.charaById.get(id)).filter(Boolean);
+        note = t("deck.missing.grandparent") + (via.length ? `: ${via.map(charaLabel).join(", ")}` : "");
+      } else note = t(`deck.missing.${m.reason}`);
+      return h("div", { class: "skill-row missing" }, skillIcon(m.id), skillNameNode(skill), h("span", { class: "note" }, note), actions);
     });
+    const leftovers = deck.missing.filter((m) => m.reason !== "none");
+    const planButton = leftovers.length && !state.firstParentId
+      ? h("div", { class: "deck-actions" }, h("button", { type: "button", class: "btn btn-ghost btn-small", onclick: () => planSecondParent(result, parent, deck) }, t("results.planSecond")))
+      : null;
     return h(
       "div",
       { class: "deck" },
@@ -964,7 +1010,7 @@
         "div",
         { class: "deck-skills" },
         h("div", null, h("h4", null, t("deck.covered")), covered.length ? covered : h("div", { class: "skill-row missing" }, "—")),
-        h("div", null, h("h4", null, t("deck.missing")), missing.length ? missing : h("div", { class: "skill-row missing" }, "—"))
+        h("div", null, h("h4", null, t("deck.missing")), missing.length ? missing : h("div", { class: "skill-row missing" }, "—"), planButton)
       )
     );
   }
@@ -974,8 +1020,8 @@
     return info && info.fallbackOf ? info.fallbackOf : effectiveId;
   }
 
-  function planSecondParent(result, current) {
-    const leftovers = current.decks[0].missing.filter((m) => m.reason === "limit" || m.reason === "nocard").map((m) => originalWantedId(result, m.id));
+  function planSecondParent(result, current, deck) {
+    const leftovers = deck.missing.filter((m) => m.reason !== "none").map((m) => originalWantedId(result, m.id));
     if (!leftovers.length) return;
     update(() => {
       state.firstParentId = current.charaId;
@@ -984,51 +1030,6 @@
     });
     showToast(t("results.secondParentSet"));
     window.scrollTo({ top: 0, behavior: "smooth" });
-  }
-
-  function renderLeftover(result, current) {
-    const chara = index.charaById.get(current.charaId);
-    const leftovers = current.decks[0].missing.filter((m) => m.reason !== "none");
-    if (!leftovers.length) return null;
-    const grandRows = leftovers
-      .filter((m) => m.reason === "grandparent" && (m.via || []).length)
-      .map((m) => {
-        const skill = index.skillById.get(m.id);
-        const via = m.via.slice(0, 4).map((id) => index.charaById.get(id)).filter(Boolean);
-        return h(
-          "div",
-          { class: "grand-row" },
-          skillIcon(m.id),
-          skillNameNode(skill),
-          h("span", { class: "note" }, t("results.viaGrand", { names: via.map(charaLabel).join(", ") })),
-          via.filter((c) => state.grandparents.length < 2 && !grandCharaIds().includes(c.charaId)).map((c) => h("button", { type: "button", class: "btn btn-ghost btn-small", onclick: () => addGrandparent(c.id) }, t("results.addGrand", { name: c.name })))
-        );
-      });
-    const scenarioRows = leftovers
-      .filter((m) => m.reason === "scenario")
-      .map((m) => {
-        const skill = index.skillById.get(m.id);
-        const ids = (m.via || []).filter((id) => scenarioById(id));
-        return h(
-          "div",
-          { class: "grand-row" },
-          skillIcon(m.id),
-          skillNameNode(skill),
-          h("span", { class: "note" }, t("deck.missing.scenario", { names: scenarioNames(ids) })),
-          ids.filter((id) => state.parentScenario !== id).map((id) => h("button", { type: "button", class: "btn btn-ghost btn-small", onclick: () => update(() => {
-            state.parentScenario = id;
-          }) }, t("results.trainIn", { name: scenarioName(id) })))
-        );
-      });
-    const rest = leftovers.filter((m) => m.reason !== "grandparent" && m.reason !== "scenario");
-    return h(
-      "div",
-      { class: "notice warn" },
-      h("div", { class: "notice-title" }, t("results.leftover", { name: chara.name })),
-      rest.length ? h("div", { class: "chip-list" }, rest.map((m) => skillChip(originalWantedId(result, m.id), t(`deck.missing.${m.reason}`), "muted"))) : null,
-      grandRows.length || scenarioRows.length ? h("div", { class: "grand-rows" }, grandRows, scenarioRows) : null,
-      rest.length ? h("div", { class: "notice-actions" }, h("button", { type: "button", class: "btn btn-small", onclick: () => planSecondParent(result, current) }, t("results.planSecond"))) : null
-    );
   }
 
   function renderDecks(result, current) {
@@ -1041,18 +1042,19 @@
     }
     const chara = index.charaById.get(current.charaId);
     title.textContent = t("results.decks", { name: charaLabel(chara) });
-    const blocks = current.decks.map((deck, i) => renderDeck(deck, i + 1, result));
-    const leftover = renderLeftover(result, current);
-    if (leftover) blocks.push(leftover);
+    const blocks = current.decks.map((deck, i) => renderDeck(deck, i + 1, result, current));
     const rules = renderRulesNotice(result);
     if (rules) blocks.unshift(rules);
-    if (current.choices.length) {
+    const scenarioPicks = current.scenario ? current.scenario.choices.filter((c) => c.optionIndex !== undefined).map((c) => Object.assign({ scenario: current.scenario.id }, c)) : [];
+    const parentPicks = current.choices.concat(scenarioPicks);
+    if (parentPicks.length) {
       blocks.unshift(
         h(
           "div",
           { class: "notice info" },
-          h("div", { class: "notice-title" }, `${chara.name}: ${t("parent.viaEvents")}`),
-          h("div", { class: "chip-list" }, current.choices.map((c) => h("span", { class: "chip", title: c.option }, h("span", { class: "chip-text" }, t("results.choice", { event: c.name, n: (c.optionIndex || 0) + 1 }), h("span", { class: "chip-sub" }, c.skills.map((id) => index.skillById.get(id).name).join(", "))))))
+          h("div", { class: "notice-title" }, t("results.parentChoices", { name: charaLabel(chara) })),
+          h("div", { class: "notice-hint" }, t("results.parentChoicesHint")),
+          h("div", { class: "choice-rows" }, parentPicks.map((pick) => renderChoiceRow(pick, chara)))
         )
       );
     }
