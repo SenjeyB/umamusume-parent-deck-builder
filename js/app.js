@@ -52,6 +52,10 @@
       grandparents: [],
       traineeScenario: "ura",
       parentScenario: "auto",
+      fillDeck: false,
+      preferHintFreq: false,
+      preferHintLevel: false,
+      limitBreaks: {},
       viewParentId: 0,
     };
   }
@@ -76,6 +80,15 @@
     const scenarioIds = (data.scenarios || []).map((sc) => sc.id);
     out.traineeScenario = scenarioIds.includes(src.traineeScenario) ? src.traineeScenario : scenarioIds[0] || "ura";
     out.parentScenario = src.parentScenario === "auto" || scenarioIds.includes(src.parentScenario) ? src.parentScenario : "auto";
+    for (const flag of ["fillDeck", "preferHintFreq", "preferHintLevel"]) out[flag] = src[flag] === true;
+    out.limitBreaks = {};
+    if (src.limitBreaks && typeof src.limitBreaks === "object") {
+      for (const [rawId, rawValue] of Object.entries(src.limitBreaks)) {
+        const id = Number(rawId);
+        const value = clampInt(rawValue, 0, S.MAX_LIMIT_BREAK, S.MAX_LIMIT_BREAK);
+        if (index.cardById.has(id) && value < S.MAX_LIMIT_BREAK) out.limitBreaks[id] = value;
+      }
+    }
     out.typeMin = defaultTypeMin();
     if (src.typeMin && typeof src.typeMin === "object") {
       let total = 0;
@@ -164,6 +177,41 @@
   const scenarioById = (id) => (data.scenarios || []).find((sc) => sc.id === id) || null;
   const scenarioName = (id) => (scenarioById(id) || {}).name || id || "";
   const charaByCharaId = (charaId) => data.charas.find((c) => c.charaId === charaId) || null;
+
+  const limitBreakOf = (cardId) => S.limitBreakOf(state.limitBreaks, cardId);
+  const hintsMatter = () => state.preferHintFreq || state.preferHintLevel;
+  const cardLevel = (card, limitBreak) => ((data.levels || {})[card.rar] || [])[limitBreak] || 0;
+
+  function hintBadges(card, limitBreak) {
+    const badges = [];
+    if (state.preferHintFreq) badges.push(h("span", { class: "badge badge-hint", title: t("card.hintFreqTitle") }, t("card.hintFreq", { n: S.hintStat(card, "hf", limitBreak) })));
+    if (state.preferHintLevel) badges.push(h("span", { class: "badge badge-hint", title: t("card.hintLevelTitle") }, t("card.hintLevel", { n: S.hintStat(card, "hl", limitBreak) })));
+    return badges;
+  }
+
+  function limitBreakLabel(card, limitBreak) {
+    const level = cardLevel(card, limitBreak);
+    const name = limitBreak >= S.MAX_LIMIT_BREAK ? t("card.mlb") : t("card.lb", { n: limitBreak });
+    return level ? `${name} · Lv ${level}` : name;
+  }
+
+  function setLimitBreak(cardId, limitBreak) {
+    update(() => {
+      if (limitBreak >= S.MAX_LIMIT_BREAK) delete state.limitBreaks[cardId];
+      else state.limitBreaks[cardId] = limitBreak;
+    }, { keepView: true });
+  }
+
+  function limitBreakSelect(card) {
+    const current = limitBreakOf(card.id);
+    const select = h(
+      "select",
+      { class: "lb-select", title: t("card.lbTitle"), onchange: (e) => setLimitBreak(card.id, clampInt(e.target.value, 0, S.MAX_LIMIT_BREAK, S.MAX_LIMIT_BREAK)) },
+      Array.from({ length: S.MAX_LIMIT_BREAK + 1 }, (_, lb) => h("option", { value: String(lb) }, limitBreakLabel(card, lb)))
+    );
+    select.value = String(current);
+    return select;
+  }
 
   function skillSources(id) {
     const cards = new Set([...(index.skillCards.get(id) || []), ...(index.skillCardEvents.get(id) || [])]);
@@ -672,6 +720,35 @@
     );
   }
 
+  const DECK_OPTIONS = ["fillDeck", "preferHintFreq", "preferHintLevel"];
+  const DECK_OPTION_KEYS = { fillDeck: "fill", preferHintFreq: "hintFreq", preferHintLevel: "hintLevel" };
+
+  function buildDeckOptions() {
+    $("deck-options").replaceChildren(
+      ...DECK_OPTIONS.map((flag) =>
+        h(
+          "label",
+          { class: "toggle-row" },
+          h("input", { type: "checkbox", dataset: { flag }, onchange: (e) => {
+            const checked = e.target.checked;
+            update(() => {
+              state[flag] = checked;
+            });
+          } }),
+          h("span", { class: "toggle-mark" }),
+          h("span", { class: "toggle-text" }, h("span", { dataset: { flagLabel: flag } }), h("small", { dataset: { flagHint: flag } }))
+        )
+      )
+    );
+  }
+
+  function renderDeckOptions() {
+    const mount = $("deck-options");
+    for (const input of mount.querySelectorAll("input[data-flag]")) input.checked = Boolean(state[input.dataset.flag]);
+    for (const span of mount.querySelectorAll("[data-flag-label]")) span.textContent = t(`deckOpts.${DECK_OPTION_KEYS[span.dataset.flagLabel]}`);
+    for (const span of mount.querySelectorAll("[data-flag-hint]")) span.textContent = t(`deckOpts.${DECK_OPTION_KEYS[span.dataset.flagHint]}Hint`);
+  }
+
   function renderTypeMins() {
     for (const input of $("type-mins").querySelectorAll("input[data-type]")) input.value = String(state.typeMin[input.dataset.type]);
     for (const span of $("type-mins").querySelectorAll("[data-type-label]")) span.lastChild.textContent = t(`type.${span.dataset.typeLabel}`);
@@ -707,6 +784,7 @@
     renderGrandparents();
     renderScenarioSelects();
     renderTypeMins();
+    renderDeckOptions();
     for (const picker of Object.values(pickers)) picker.refresh();
   }
 
@@ -722,6 +800,10 @@
       target: { charaId: state.targetId, awakening: state.targetAwakening, deck: state.targetDeck, scenario: state.traineeScenario },
       parent: { charaId: state.parentId, awakening: state.parentAwakening, scenario: state.parentScenario },
       typeMin: state.typeMin,
+      fillDeck: state.fillDeck,
+      preferHintFreq: state.preferHintFreq,
+      preferHintLevel: state.preferHintLevel,
+      limitBreaks: state.limitBreaks,
       notOwned: new Set(state.notOwned),
       notOwnedCharas: new Set(state.notOwnedCharas),
       excludeCharaIds: firstParentCharaIds(),
@@ -924,18 +1006,26 @@
         h("div", { class: "slot-alt-head" }, t("deck.alts", { n: slot.alts.length }), h("span", { class: "slot-alt-close" }, "✕")),
         slot.alts.map((id) => {
           const alt = index.cardById.get(id);
-          return h("div", { class: "slot-alt" }, h("span", { class: `badge badge-rarity rar-${alt.rar}` }, t(`rarity.${alt.rar}`)), cardLabel(alt));
+          return h("div", { class: "slot-alt" }, h("span", { class: `badge badge-rarity rar-${alt.rar}` }, t(`rarity.${alt.rar}`)), hintBadges(alt, limitBreakOf(alt.id)), cardLabel(alt));
         })
       );
       return h(
         "div",
-        { class: `slot slot-card type-${card.type}` + (slot.borrowed ? " borrow" : "") },
+        { class: `slot slot-card type-${card.type}` + (slot.borrowed ? " borrow" : "") + (slot.extra ? " extra" : "") },
         slot.borrowed
           ? h("span", { class: "slot-borrow" }, t("deck.borrow"))
           : h("button", { type: "button", class: "slot-remove", title: t("deck.notOwn"), onclick: () => markNotOwned(card.id) }, "✕"),
         h("img", { class: "thumb", src: cardImg(card.id), alt: cardLabel(card), loading: "lazy" }),
         h("div", { class: "slot-name" }, card.chara, h("small", { title: card.title }, card.title)),
-        h("div", { class: "chip-list", style: "justify-content:center;margin:0" }, h("span", { class: `badge badge-rarity rar-${card.rar}` }, t(`rarity.${card.rar}`)), h("span", { class: `badge badge-type type-${card.type}` }, t(`type.short.${card.type}`))),
+        h(
+          "div",
+          { class: "chip-list", style: "justify-content:center;margin:0" },
+          h("span", { class: `badge badge-rarity rar-${card.rar}` }, t(`rarity.${card.rar}`)),
+          h("span", { class: `badge badge-type type-${card.type}` }, t(`type.short.${card.type}`)),
+          slot.extra ? h("span", { class: "badge badge-extra", title: t("deck.extraTitle") }, t("deck.extra")) : null,
+          hintsMatter() ? hintBadges(card, limitBreakOf(card.id)) : null
+        ),
+        hintsMatter() ? h("div", { class: "slot-lb" }, limitBreakSelect(card)) : null,
         slot.choices.length || slot.links.length
           ? h(
               "div",
@@ -1070,7 +1160,8 @@
 
   function renderNotOwned() {
     const mount = $("not-owned");
-    if (!state.notOwned.length && !state.notOwnedCharas.length) {
+    const limited = Object.keys(state.limitBreaks).map(Number).filter((id) => index.cardById.has(id));
+    if (!state.notOwned.length && !state.notOwnedCharas.length && !limited.length) {
       mount.replaceChildren(h("span", { class: "hint" }, t("notOwned.empty")));
       return;
     }
@@ -1117,6 +1208,25 @@
         )
       );
     }
+    if (limited.length) {
+      blocks.push(
+        h("h4", { class: "not-owned-title" }, t("notOwned.limitBreaks")),
+        h(
+          "div",
+          { class: "chip-list" },
+          limited.map((id) => {
+            const card = index.cardById.get(id);
+            return h(
+              "span",
+              { class: `chip type-${card.type}` },
+              h("img", { src: cardImg(card.id), alt: "" }),
+              h("span", { class: "chip-text" }, card.chara, h("span", { class: "chip-sub" }, `${card.title} · ${limitBreakLabel(card, limitBreakOf(id))}`)),
+              h("button", { type: "button", class: "icon-btn", title: t("card.lbReset"), onclick: () => setLimitBreak(id, S.MAX_LIMIT_BREAK) }, "↩")
+            );
+          })
+        )
+      );
+    }
     mount.replaceChildren(...blocks);
   }
 
@@ -1148,7 +1258,7 @@
 
   function resetInputs() {
     if (!confirm(t("action.resetConfirm"))) return;
-    const keep = { lang: state.lang, notOwned: state.notOwned, notOwnedCharas: state.notOwnedCharas };
+    const keep = { lang: state.lang, notOwned: state.notOwned, notOwnedCharas: state.notOwnedCharas, limitBreaks: state.limitBreaks };
     state = Object.assign(defaultState(), keep);
     saveState();
     renderInputs();
@@ -1171,6 +1281,7 @@
     renderAwakeningSelects();
     buildScenarioSelects();
     buildTypeMins();
+    buildDeckOptions();
     buildPickers();
     $("target-scenario").addEventListener("change", (e) => update(() => {
       state.traineeScenario = e.target.value;
@@ -1189,6 +1300,7 @@
     $("btn-clear-not-owned").addEventListener("click", () => update(() => {
       state.notOwned = [];
       state.notOwnedCharas = [];
+      state.limitBreaks = {};
     }, { keepView: true }));
     for (const btn of document.querySelectorAll("#lang-switch [data-lang]")) {
       btn.classList.toggle("active", btn.dataset.lang === state.lang);

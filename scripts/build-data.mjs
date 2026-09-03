@@ -267,6 +267,34 @@ function computeInheritable(skills, sparks) {
   return inheritable;
 }
 
+const EFFECT_LEVEL_KEYS = ["initValue", "level5Value", "level10Value", "level15Value", "level20Value", "level25Value", "level30Value", "level35Value", "level40Value", "level45Value", "level50Value"];
+const EFFECT_LEVELS = [1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50];
+const BASE_MAX_LEVEL = { 1: 20, 2: 25, 3: 30 };
+const LIMIT_BREAKS = [0, 1, 2, 3, 4];
+const HINT_FREQUENCY = 18;
+const HINT_LEVELS = 17;
+
+function effectAt(effect, level) {
+  let value = 0;
+  for (let i = 0; i < EFFECT_LEVELS.length && EFFECT_LEVELS[i] <= level; i++) {
+    const raw = effect[EFFECT_LEVEL_KEYS[i]];
+    if (typeof raw === "number" && raw >= 0) value = raw;
+  }
+  return value;
+}
+
+function cardLevels(rarity) {
+  const base = BASE_MAX_LEVEL[rarity] || BASE_MAX_LEVEL[1];
+  return LIMIT_BREAKS.map((lb) => base + 5 * lb);
+}
+
+function effectByLimitBreak(card, effectType) {
+  const effect = (card.effects || []).find((e) => e.effectType === effectType);
+  if (!effect) return [];
+  const values = cardLevels(card.rarity).map((level) => effectAt(effect, level));
+  return values.some((v) => v > 0) ? values : [];
+}
+
 function buildScenarios(skillById) {
   for (const [id, name] of Object.entries(EXPECTED_SKILL_NAMES)) {
     const skill = skillById.get(Number(id));
@@ -306,6 +334,8 @@ function buildDataset({ cards, charas, skills, overrides, sparks }) {
       type: cardType(c),
       date: String(c.startDate || "").slice(0, 10),
       hints: (c.skillHints || []).map((h) => h.skillId).filter((id) => id && skillById.has(id)),
+      hf: effectByLimitBreak(c, HINT_FREQUENCY),
+      hl: effectByLimitBreak(c, HINT_LEVELS),
       events: [],
     }))
     .sort((a, b) => a.id - b.id);
@@ -349,6 +379,7 @@ function buildDataset({ cards, charas, skills, overrides, sparks }) {
 
   return {
     server: "gl",
+    levels: Object.fromEntries([1, 2, 3].map((rarity) => [rarity, cardLevels(rarity)])),
     source: SITE,
     eventSource: GAMETORA,
     generated: new Date().toISOString().slice(0, 10),

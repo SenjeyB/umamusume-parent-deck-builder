@@ -10,10 +10,12 @@ Live: https://senjeyb.github.io/umamusume-parent-deck-builder/
 2. Skills the trainee already has (or their upgraded / gold versions) and skills hinted by her own deck are removed from the list.
 3. For every playable uma the tool computes how many wanted skills she has innately and finds the best deck of up to 6 support cards (5 owned + 1 borrow) that hints the remaining ones. Parents are ranked by the total coverage; you can also force a specific parent.
 4. Decks respect the **minimum number of cards per type** you set (default: 1 Speed). Slots that are reserved for a type but do not need a specific card are shown with the type icon, unneeded slots are shown as free slots.
-5. Cards you do not own can be marked with ✕. They are then only suggested in the borrow slot and the decks are recalculated. Umas you do not own can be marked the same way on the parent candidates and are skipped.
-6. Game rules are respected: the parent is never the trainee's character (in any outfit), a deck never contains a card of the parent's own character, and never two cards of the same character.
-7. When coverage is equal, SSR cards are preferred over SR, and SR over R.
-8. The **Missing** list of every deck tells why a skill is missing: no slot left, only from another parent, only via a grandparent, or only in a training scenario (with a button to switch the parent's scenario). One click turns the missing skills into the wish list for the **second parent**, with the first parent's character excluded from the candidates.
+5. **Deck building** has three switches. *Fill every slot* offers all six cards instead of the smallest deck: the added cards repeat the hints of the highest-priority skills (priority follows the ranking mode), so those hints appear more often during training. *Prefer higher hint frequency* picks, among cards that give the same skills, the one with the higher Hint Frequency and only then the rarer one. *Prefer higher hint level* does the same for Hint Levels and only decides between cards with equal Hint Frequency.
+6. Both hint values depend on the card's max level, so on every suggested card you can set how many **limit breaks** you have (LB 0 to MLB) and the decks are rebuilt for the levels you actually own. Cards below MLB are listed in the collection panel.
+7. Cards you do not own can be marked with ✕. They are then only suggested in the borrow slot and the decks are recalculated. Umas you do not own can be marked the same way on the parent candidates and are skipped.
+8. Game rules are respected: the parent is never the trainee's character (in any outfit), a deck never contains a card of the parent's own character, and never two cards of the same character.
+9. When coverage is equal, SSR cards are preferred over SR, and SR over R.
+10. The **Missing** list of every deck tells why a skill is missing: no slot left, only from another parent, only via a grandparent, or only in a training scenario (with a button to switch the parent's scenario). One click turns the missing skills into the wish list for the **second parent**, with the first parent's character excluded from the candidates.
 
 The wish list can hold up to 150 skills. When a gold skill is in the list, its white version is not offered in the search, because the tool already falls back to it when needed.
 
@@ -32,7 +34,7 @@ Everything runs in the browser. Inputs are stored in `localStorage`, and the **C
 
 ## Data
 
-`data/gl.js` and the images in `img/` are generated from the public data of [uma.guide](https://uma.guide/) (characters, support cards, skills). Skill rewards of career events come from [GameTora](https://gametora.com/umamusume) support card and character pages. The support card database of [uma-tiers](https://github.com/Euophrys/uma-tiers) was used as a reference for card ids and types.
+`data/gl.js` and the images in `img/` are generated from the public data of [uma.guide](https://uma.guide/) (characters, support cards, skills, and the Hint Frequency / Hint Levels of a card at every limit break). Skill rewards of career events come from [GameTora](https://gametora.com/umamusume) support card and character pages. The support card database of [uma-tiers](https://github.com/Euophrys/uma-tiers) was used as a reference for card ids and types.
 
 To refresh the dataset:
 

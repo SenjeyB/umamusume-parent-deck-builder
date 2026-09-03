@@ -5,6 +5,10 @@
   const MAX_VARIANTS = 8;
   const WORD_BITS = 31;
 
+  const LIMIT_BREAKS = 5;
+  const MAX_LIMIT_BREAK = LIMIT_BREAKS - 1;
+  const FILL_DECAY = 0.5;
+
   const Mask = {
     words(count) {
       return Math.max(1, Math.ceil(count / WORD_BITS));
@@ -329,7 +333,31 @@
     return { mask, picks };
   }
 
-  function cardVariants(index, card, position, weights, remainingMask, owned) {
+  function limitBreakOf(limitBreaks, cardId) {
+    const raw = Math.floor(Number((limitBreaks || {})[cardId]));
+    return Number.isFinite(raw) ? Math.min(MAX_LIMIT_BREAK, Math.max(0, raw)) : MAX_LIMIT_BREAK;
+  }
+
+  function hintStat(card, key, limitBreak) {
+    const values = card[key];
+    if (!values || !values.length) return 0;
+    return values[Math.min(values.length - 1, limitBreak)] || 0;
+  }
+
+  function cardQuality(card, opts) {
+    const limitBreak = limitBreakOf(opts.limitBreaks, card.id);
+    const frequency = opts.preferHintFreq ? hintStat(card, "hf", limitBreak) : 0;
+    const level = opts.preferHintLevel ? hintStat(card, "hl", limitBreak) : 0;
+    return frequency * 100 + level * 10 + card.rar;
+  }
+
+  function qualityIndex(index, opts) {
+    const map = new Map();
+    for (const card of index.data.cards) map.set(card.id, cardQuality(card, opts));
+    return (card) => map.get(card.id) || card.rar;
+  }
+
+  function cardVariants(index, card, position, weights, remainingMask, owned, quality) {
     const words = remainingMask.length;
     const sources = cardSources(index, card, "card");
     const baseMask = Mask.and(setMask(inheritableOnly(index, sources.free), position, words), remainingMask);
@@ -379,34 +407,38 @@
       const key = Mask.key(combo.mask);
       if (Mask.isZero(combo.mask) || seen.has(key)) continue;
       seen.add(key);
-      variants.push({ kind: "card", id: card.id, charaId: card.charaId || 0, type: card.type, rar: card.rar, owned, mask: combo.mask, hintMask: baseMask, linkMask: Mask.empty(words), weight: Mask.weight(combo.mask, weights), choices: combo.choices, alts: [], groups: [], links: [] });
+      variants.push({ kind: "card", id: card.id, charaId: card.charaId || 0, type: card.type, rar: card.rar, q: quality(card), owned, mask: combo.mask, hintMask: baseMask, linkMask: Mask.empty(words), weight: Mask.weight(combo.mask, weights), choices: combo.choices, alts: [], groups: [], links: [] });
     }
     return variants;
   }
 
-  function buildCandidates(index, position, weights, remainingMask, notOwned, excludeCharaId) {
+  function buildCandidates(index, position, weights, remainingMask, notOwned, excludeCharaId, quality, keepDominated) {
     const raw = [];
     for (const card of index.data.cards) {
       if (!card.hints.length && !(card.events || []).length) continue;
       if (excludeCharaId && card.charaId === excludeCharaId) continue;
-      raw.push(...cardVariants(index, card, position, weights, remainingMask, !notOwned.has(card.id)));
+      raw.push(...cardVariants(index, card, position, weights, remainingMask, !notOwned.has(card.id), quality));
     }
     for (const cand of raw) cand.bits = Mask.popcount(cand.mask);
-    raw.sort((a, b) => b.bits - a.bits || b.rar - a.rar || (b.owned ? 1 : 0) - (a.owned ? 1 : 0) || a.choices.length - b.choices.length || b.id - a.id);
+    raw.sort((a, b) => b.bits - a.bits || b.q - a.q || (b.owned ? 1 : 0) - (a.owned ? 1 : 0) || a.choices.length - b.choices.length || b.id - a.id);
     const kept = [];
+    const dominatedCards = new Map();
     for (const cand of raw) {
-      const dominator = kept.find((k) => k.type === cand.type && Mask.isSubset(cand.mask, k.mask) && k.rar >= cand.rar && (k.owned || !cand.owned));
+      const dominator = kept.find((k) => k.type === cand.type && Mask.isSubset(cand.mask, k.mask) && k.q >= cand.q && (k.owned || !cand.owned));
       if (dominator) {
         if (dominator.id !== cand.id && Mask.equals(dominator.mask, cand.mask) && !dominator.alts.includes(cand.id)) dominator.alts.push(cand.id);
+        if (keepDominated && !dominatedCards.has(cand.id)) dominatedCards.set(cand.id, cand);
         continue;
       }
       kept.push(cand);
     }
-    return sortCandidates(kept);
+    if (!keepDominated) return sortCandidates(kept);
+    const chosen = new Set(kept.map((c) => c.id));
+    return sortCandidates(kept.concat([...dominatedCards.values()].filter((c) => !chosen.has(c.id))));
   }
 
   function sortCandidates(cands) {
-    cands.sort((a, b) => b.weight - a.weight || b.rar - a.rar || (b.owned ? 1 : 0) - (a.owned ? 1 : 0) || b.id - a.id);
+    cands.sort((a, b) => b.weight - a.weight || b.q - a.q || (b.owned ? 1 : 0) - (a.owned ? 1 : 0) || b.id - a.id);
     return cands;
   }
 
@@ -441,17 +473,17 @@
     return betterSeed(eager, plain) ? eager : plain;
   }
 
-  function deckGroupCandidates(index, groups, position, weights, remaining, notOwned, excludeCharaId, plain, variantCache) {
+  function deckGroupCandidates(index, groups, position, weights, remaining, notOwned, excludeCharaId, plain, variantCache, quality) {
     const words = remaining.length;
     const out = [];
     const full = Mask.full(position.size);
     const variantsOf = (card, owned) => {
       const key = `${card.id}|${owned ? 1 : 0}`;
-      if (!variantCache.has(key)) variantCache.set(key, cardVariants(index, card, position, weights, full, owned));
+      if (!variantCache.has(key)) variantCache.set(key, cardVariants(index, card, position, weights, full, owned, quality));
       const variants = restrictCandidates(variantCache.get(key), Mask.andNot(full, remaining), weights);
-      return variants.length ? variants : [{ kind: "card", id: card.id, charaId: card.charaId, type: card.type, rar: card.rar, owned, mask: Mask.empty(words), hintMask: Mask.empty(words), linkMask: Mask.empty(words), weight: 0, choices: [], alts: [], groups: [], links: [] }];
+      return variants.length ? variants : [{ kind: "card", id: card.id, charaId: card.charaId, type: card.type, rar: card.rar, q: quality(card), owned, mask: Mask.empty(words), hintMask: Mask.empty(words), linkMask: Mask.empty(words), weight: 0, choices: [], alts: [], groups: [], links: [] }];
     };
-    const dominated = (cand) => plain.some((k) => k.type === cand.type && Mask.isSubset(cand.mask, k.mask) && k.rar >= cand.rar && (k.owned || !cand.owned));
+    const dominated = (cand) => plain.some((k) => k.type === cand.type && Mask.isSubset(cand.mask, k.mask) && k.q >= cand.q && (k.owned || !cand.owned));
     for (const group of groups) {
       const options = group.options
         .map((option) => ({ option, mask: Mask.and(setMask(inheritableOnly(index, option.set), position, words), remaining) }))
@@ -460,7 +492,7 @@
       const kept = [];
       for (const o of options) if (!kept.some((k) => Mask.isSubset(o.mask, k.mask))) kept.push(o);
       for (const o of kept) {
-        out.push({ kind: "choice", id: 0, charaId: 0, type: "choice", rar: 0, owned: true, mask: o.mask, hintMask: Mask.empty(words), linkMask: o.mask, weight: Mask.weight(o.mask, weights), bits: Mask.popcount(o.mask), choices: [], alts: [], groups: [group.key], links: [], choice: { name: group.name, how: group.how, text: o.option.text, link: o.option.link } });
+        out.push({ kind: "choice", id: 0, charaId: 0, type: "choice", rar: 0, q: 0, owned: true, mask: o.mask, hintMask: Mask.empty(words), linkMask: o.mask, weight: Mask.weight(o.mask, weights), bits: Mask.popcount(o.mask), choices: [], alts: [], groups: [group.key], links: [], choice: { name: group.name, how: group.how, text: o.option.text, link: o.option.link } });
       }
       const linked = [];
       for (const link of group.links) {
@@ -479,9 +511,9 @@
           }
         }
       }
-      linked.sort((a, b) => b.bits - a.bits || b.rar - a.rar || (b.owned ? 1 : 0) - (a.owned ? 1 : 0) || a.choices.length - b.choices.length || b.id - a.id);
+      linked.sort((a, b) => b.bits - a.bits || b.q - a.q || (b.owned ? 1 : 0) - (a.owned ? 1 : 0) || a.choices.length - b.choices.length || b.id - a.id);
       for (const cand of linked) {
-        if (!out.some((k) => k.kind === "card" && k.type === cand.type && Mask.isSubset(cand.mask, k.mask) && k.rar >= cand.rar && (k.owned || !cand.owned))) out.push(cand);
+        if (!out.some((k) => k.kind === "card" && k.type === cand.type && Mask.isSubset(cand.mask, k.mask) && k.q >= cand.q && (k.owned || !cand.owned))) out.push(cand);
       }
     }
     return out;
@@ -524,14 +556,14 @@
     next.typeCounts = typeCounts;
     next.overflow = state.overflow + (current >= constraints.mins[cand.type] ? 1 : 0);
     next.borrowed = state.borrowed || !cand.owned;
-    next.raritySum = state.raritySum + cand.rar;
+    next.qualitySum = state.qualitySum + cand.q;
     next.cards = state.cards.concat(cand.id);
     next.charas = state.charas.concat(cand.charaId || []);
     return next;
   }
 
   function emptyState(words) {
-    return { covered: Mask.empty(words), count: 0, typeCounts: {}, overflow: 0, borrowed: false, score: 0, raritySum: 0, cards: [], charas: [], chosen: [], groups: [] };
+    return { covered: Mask.empty(words), count: 0, typeCounts: {}, overflow: 0, borrowed: false, score: 0, qualitySum: 0, cards: [], charas: [], chosen: [], groups: [] };
   }
 
   function greedy(cands, weights, constraints, words, preferChoices) {
@@ -547,7 +579,7 @@
           bestGain = 0;
         }
         const gain = Mask.gain(cand.mask, state.covered, weights);
-        if (gain > bestGain || (gain === bestGain && best && (cand.rar > best.rar || (cand.rar === best.rar && cand.owned && !best.owned)))) {
+        if (gain > bestGain || (gain === bestGain && best && (cand.q > best.q || (cand.q === best.q && cand.owned && !best.owned)))) {
           best = cand;
           bestGain = gain;
         }
@@ -560,7 +592,7 @@
   function betterDeck(a, b) {
     if (a.score !== b.score) return a.score > b.score;
     if (a.count !== b.count) return a.count < b.count;
-    if (a.raritySum !== b.raritySum) return a.raritySum > b.raritySum;
+    if (a.qualitySum !== b.qualitySum) return a.qualitySum > b.qualitySum;
     if (a.borrowed !== b.borrowed) return !a.borrowed;
     const assumptions = (c) => c.choices.length + c.links.length + (c.kind === "choice" ? 1 : 0);
     const ca = a.chosen.reduce((n, c) => n + assumptions(c), 0);
@@ -645,7 +677,7 @@
         children.push({ cand, gain: Mask.gain(cand.mask, state.covered, weights) });
       }
       if (!children.length) return;
-      children.sort((a, b) => b.gain - a.gain || b.cand.rar - a.cand.rar || (b.cand.owned ? 1 : 0) - (a.cand.owned ? 1 : 0));
+      children.sort((a, b) => b.gain - a.gain || b.cand.q - a.cand.q || (b.cand.owned ? 1 : 0) - (a.cand.owned ? 1 : 0));
       const gains = children.map((c) => c.gain);
       const extra = choices.length ? choiceBound(state) : 0;
       for (let j = 0; j < children.length; j++) {
@@ -666,7 +698,7 @@
   }
 
   function pruneRedundant(state, weights, constraints, words) {
-    const chosen = state.chosen.slice().sort((a, b) => (a.kind === "choice" ? 1 : 0) - (b.kind === "choice" ? 1 : 0) || a.rar - b.rar || (a.owned ? 1 : 0) - (b.owned ? 1 : 0));
+    const chosen = state.chosen.slice().sort((a, b) => (a.kind === "choice" ? 1 : 0) - (b.kind === "choice" ? 1 : 0) || a.q - b.q || (a.owned ? 1 : 0) - (b.owned ? 1 : 0));
     let changed = true;
     while (changed) {
       changed = false;
@@ -685,6 +717,52 @@
     return rebuilt;
   }
 
+  function fillDeck(state, pool, weights, constraints) {
+    if (!pool || !pool.length) return state;
+    const counts = [];
+    const bump = (cand) => {
+      for (const i of Mask.indexes(cand.mask)) counts[i] = (counts[i] || 0) + 1;
+    };
+    let out = state;
+    for (const cand of out.chosen) if (cand.kind !== "choice") bump(cand);
+    const score = (cand) => {
+      let total = 0;
+      for (const i of Mask.indexes(cand.mask)) total += weights[i] * Math.pow(FILL_DECAY, counts[i] || 0);
+      return total;
+    };
+    const pick = (type) => {
+      let best = null;
+      let bestScore = 0;
+      for (const cand of pool) {
+        if (type && cand.type !== type) continue;
+        if (!canAdd(out, cand, constraints)) continue;
+        const value = score(cand);
+        if (value > bestScore || (value === bestScore && best && (cand.q > best.q || (cand.q === best.q && cand.owned && !best.owned)))) {
+          best = cand;
+          bestScore = value;
+        }
+      }
+      return best;
+    };
+    const add = (cand) => {
+      out = applyAdd(out, Object.assign({}, cand, { extra: true }), constraints, Mask.gain(cand.mask, out.covered, weights));
+      bump(cand);
+    };
+    for (const type of TYPES) {
+      while ((out.typeCounts[type] || 0) < constraints.mins[type] && out.count < DECK_SIZE) {
+        const best = pick(type);
+        if (!best) break;
+        add(best);
+      }
+    }
+    while (out.count < DECK_SIZE) {
+      const best = pick(null);
+      if (!best) break;
+      add(best);
+    }
+    return out;
+  }
+
   function frontier(decks) {
     const kept = [];
     for (const deck of decks) {
@@ -695,7 +773,7 @@
   }
 
   function describeDeck(state, ctx) {
-    const cards = state.chosen.filter((c) => c.kind !== "choice").sort((a, b) => TYPES.indexOf(a.type) - TYPES.indexOf(b.type) || b.rar - a.rar || a.id - b.id);
+    const cards = state.chosen.filter((c) => c.kind !== "choice").sort((a, b) => TYPES.indexOf(a.type) - TYPES.indexOf(b.type) || b.q - a.q || a.id - b.id);
     const picks = state.chosen.filter((c) => c.kind === "choice");
     const scenarioId = ctx.scenario ? ctx.scenario.id : "";
     const names = (mask) => Mask.indexes(mask).map((i) => ctx.effective[i]);
@@ -705,6 +783,7 @@
       kind: "card",
       id: c.id,
       borrowed: !c.owned,
+      extra: Boolean(c.extra),
       alts: c.alts,
       skills: names(c.mask),
       eventSkills: names(Mask.andNot(Mask.andNot(c.mask, c.hintMask), c.linkMask)),
@@ -751,7 +830,7 @@
       score: state.score + ctx.parentScore,
       deckScore: state.score,
       cardCount: cards.length,
-      raritySum: state.raritySum,
+      qualitySum: state.qualitySum,
       borrowed: state.borrowed,
       covered,
       missing,
@@ -769,6 +848,8 @@
     const grandparents = (opts.grandparents || []).map((id) => index.charaById.get(Number(id))).filter(Boolean);
     const grandCharaIds = new Set(grandparents.map((g) => g.charaId));
     const constraints = makeConstraints(opts.typeMin || {});
+    const quality = qualityIndex(index, opts);
+    const fillSlots = Boolean(opts.fillDeck);
     const maxDecks = opts.maxDecks || 10;
     const maxParents = opts.maxParents || 8;
     const target = opts.target || {};
@@ -888,7 +969,7 @@
     const inh = (set) => inheritableOnly(index, set);
     const variantCache = new Map();
     const assemble = (chara, plain, deckGroups, remaining) => {
-      const extra = deckGroups.length ? deckGroupCandidates(index, deckGroups, position, weights, remaining, notOwned, chara.charaId, plain, variantCache) : [];
+      const extra = deckGroups.length ? deckGroupCandidates(index, deckGroups, position, weights, remaining, notOwned, chara.charaId, plain, variantCache, quality) : [];
       const cands = extra.length ? sortCandidates(plain.concat(extra)) : plain;
       return { cands, extra, seed: bestSeed(cands, extra.length > 0, weights, constraints, words) };
     };
@@ -912,7 +993,7 @@
       let noSecret = (chara.events || []).some((e) => e.g === "secret") ? variant(true) : full;
       if (noSecret !== full && Mask.equals(noSecret.ownMask, full.ownMask)) noSecret = full;
       const candsFor = (own) => {
-        if (!own.baseCands) own.baseCands = buildCandidates(index, position, weights, Mask.andNot(fullMask, own.baseMask), notOwned, chara.charaId);
+        if (!own.baseCands) own.baseCands = buildCandidates(index, position, weights, Mask.andNot(fullMask, own.baseMask), notOwned, chara.charaId, quality);
         return own.baseCands;
       };
       const evaluate = (sc) => {
@@ -952,7 +1033,7 @@
     if (manual && !detailed.includes(manual)) detailed.push(manual);
     for (const p of detailed) {
       if (!Mask.isZero(p.scenarioMask)) {
-        const built = assemble(p.chara, buildCandidates(index, position, weights, p.remaining, notOwned, p.chara.charaId), p.deckGroups, p.remaining);
+        const built = assemble(p.chara, buildCandidates(index, position, weights, p.remaining, notOwned, p.chara.charaId, quality), p.deckGroups, p.remaining);
         p.cands = built.cands;
         if (betterSeed(built.seed, p.seed)) p.seed = built.seed;
       }
@@ -976,7 +1057,9 @@
         grandSources,
       };
       const search = searchDecks(p.cands, weights, constraints, maxDecks * 3, opts.nodeBudget || 150000, words, p.seed);
-      const decks = frontier(search.decks.map((s) => describeDeck(s, ctx))).slice(0, maxDecks);
+      const pool = fillSlots ? buildCandidates(index, position, weights, p.remaining, notOwned, p.chara.charaId, quality, true) : null;
+      const states = fillSlots ? search.decks.map((s) => fillDeck(s, pool, weights, constraints)) : search.decks;
+      const decks = frontier(states.map((s) => describeDeck(s, ctx))).slice(0, maxDecks);
       if (!decks.length) decks.push(describeDeck(emptyState(words), ctx));
       p.exact = { decks, complete: search.complete, nodes: search.nodes };
       p.total = decks[0].score;
@@ -1032,5 +1115,5 @@
     };
   }
 
-  root.UmaSolver = { TYPES, DECK_SIZE, MAX_WANTED, createIndex, expandDown, charaSkillIds, weightsFor, solve, isGoldSkill, isInheritableSkill, inheritableFallback };
+  root.UmaSolver = { TYPES, DECK_SIZE, MAX_WANTED, MAX_LIMIT_BREAK, createIndex, expandDown, charaSkillIds, weightsFor, solve, isGoldSkill, isInheritableSkill, inheritableFallback, limitBreakOf, hintStat };
 })(typeof window !== "undefined" ? window : globalThis);
