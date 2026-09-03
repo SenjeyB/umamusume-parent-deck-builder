@@ -53,7 +53,7 @@
       traineeScenario: "ura",
       parentScenario: "auto",
       fillDeck: false,
-      preferHintFreq: false,
+      preferHintOdds: false,
       preferHintLevel: false,
       limitBreaks: {},
       viewParentId: 0,
@@ -80,7 +80,8 @@
     const scenarioIds = (data.scenarios || []).map((sc) => sc.id);
     out.traineeScenario = scenarioIds.includes(src.traineeScenario) ? src.traineeScenario : scenarioIds[0] || "ura";
     out.parentScenario = src.parentScenario === "auto" || scenarioIds.includes(src.parentScenario) ? src.parentScenario : "auto";
-    for (const flag of ["fillDeck", "preferHintFreq", "preferHintLevel"]) out[flag] = src[flag] === true;
+    for (const flag of ["fillDeck", "preferHintOdds", "preferHintLevel"]) out[flag] = src[flag] === true;
+    if (src.preferHintFreq === true) out.preferHintOdds = true;
     out.limitBreaks = {};
     if (src.limitBreaks && typeof src.limitBreaks === "object") {
       for (const [rawId, rawValue] of Object.entries(src.limitBreaks)) {
@@ -179,12 +180,19 @@
   const charaByCharaId = (charaId) => data.charas.find((c) => c.charaId === charaId) || null;
 
   const limitBreakOf = (cardId) => S.limitBreakOf(state.limitBreaks, cardId);
-  const hintsMatter = () => state.preferHintFreq || state.preferHintLevel;
   const cardLevel = (card, limitBreak) => ((data.levels || {})[card.rar] || [])[limitBreak] || 0;
+  const round1 = (value) => (Math.round(value * 10) / 10).toFixed(1);
 
   function hintBadges(card, limitBreak) {
-    const badges = [];
-    if (state.preferHintFreq) badges.push(h("span", { class: "badge badge-hint", title: t("card.hintFreqTitle") }, t("card.hintFreq", { n: S.hintStat(card, "hf", limitBreak) })));
+    const pool = S.hintPool(card);
+    if (!pool) return [];
+    const badges = [
+      h(
+        "span",
+        { class: "badge badge-hint", title: t("card.oddsTitle", { f: S.hintStat(card, "hf", limitBreak), pool, n: round1(S.hintOdds(card, limitBreak)) }) },
+        t("card.odds", { n: round1(S.hintOdds(card, limitBreak)) })
+      ),
+    ];
     if (state.preferHintLevel) badges.push(h("span", { class: "badge badge-hint", title: t("card.hintLevelTitle") }, t("card.hintLevel", { n: S.hintStat(card, "hl", limitBreak) })));
     return badges;
   }
@@ -720,8 +728,8 @@
     );
   }
 
-  const DECK_OPTIONS = ["fillDeck", "preferHintFreq", "preferHintLevel"];
-  const DECK_OPTION_KEYS = { fillDeck: "fill", preferHintFreq: "hintFreq", preferHintLevel: "hintLevel" };
+  const DECK_OPTIONS = ["fillDeck", "preferHintOdds", "preferHintLevel"];
+  const DECK_OPTION_KEYS = { fillDeck: "fill", preferHintOdds: "hintOdds", preferHintLevel: "hintLevel" };
 
   function buildDeckOptions() {
     $("deck-options").replaceChildren(
@@ -790,7 +798,11 @@
 
   function scheduleCompute() {
     clearTimeout(computeTimer);
-    computeTimer = setTimeout(compute, 40);
+    document.body.classList.add("busy");
+    computeTimer = setTimeout(() => requestAnimationFrame(() => {
+      compute();
+      document.body.classList.remove("busy");
+    }), 40);
   }
 
   function compute() {
@@ -801,7 +813,7 @@
       parent: { charaId: state.parentId, awakening: state.parentAwakening, scenario: state.parentScenario },
       typeMin: state.typeMin,
       fillDeck: state.fillDeck,
-      preferHintFreq: state.preferHintFreq,
+      preferHintOdds: state.preferHintOdds,
       preferHintLevel: state.preferHintLevel,
       limitBreaks: state.limitBreaks,
       notOwned: new Set(state.notOwned),
@@ -1023,9 +1035,9 @@
           h("span", { class: `badge badge-rarity rar-${card.rar}` }, t(`rarity.${card.rar}`)),
           h("span", { class: `badge badge-type type-${card.type}` }, t(`type.short.${card.type}`)),
           slot.extra ? h("span", { class: "badge badge-extra", title: t("deck.extraTitle") }, t("deck.extra")) : null,
-          hintsMatter() ? hintBadges(card, limitBreakOf(card.id)) : null
+          hintBadges(card, limitBreakOf(card.id))
         ),
-        hintsMatter() ? h("div", { class: "slot-lb" }, limitBreakSelect(card)) : null,
+        h("div", { class: "slot-lb" }, limitBreakSelect(card)),
         slot.choices.length || slot.links.length
           ? h(
               "div",
@@ -1065,7 +1077,10 @@
       else if (c.from === "scenario") note = t("deck.fromScenario", { scenario: scenarioName(c.scenario), how: howText(c.origin, c.scenario) });
       else if (c.from === "grandparent") note = t("deck.fromGrand", { name: c.grandparent ? charaLabel(index.charaById.get(c.grandparent)) : "" });
       else note = c.cards.map((id) => index.cardById.get(id).chara).join(", ") + (c.viaEvent ? ` (${t("deck.viaEvent")})` : "");
-      return h("div", { class: "skill-row" }, skillIcon(c.id), skillNameNode(skill), h("span", { class: "note" }, note));
+      const odds = c.from === "card" && !c.viaEvent
+        ? h("span", { class: "badge badge-hint", title: t("deck.hintOddsTitle", { cards: c.cards.map((id) => `${index.cardById.get(id).chara} ${round1(S.hintOdds(index.cardById.get(id), limitBreakOf(id)))}`).join(", ") }) }, t("card.odds", { n: round1(c.odds) }))
+        : null;
+      return h("div", { class: "skill-row" }, skillIcon(c.id), skillNameNode(skill), h("span", { class: "note" }, note), odds);
     });
     const missing = deck.missing.map((m) => {
       const skill = index.skillById.get(m.id);
